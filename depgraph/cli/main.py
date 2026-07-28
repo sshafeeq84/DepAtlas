@@ -38,8 +38,11 @@ def cli() -> None:
     help=(
         "Path to a JSON file mapping importable module names to service "
         "names, e.g. {\"__self__\": \"payments-service\", \"auth_client\": \"auth-service\"}. "
-        "__self__ names the service being scanned; this replaces the full "
-        "depgraph.yaml manifest for now."
+        "__self__ names the service being scanned. An optional reserved "
+        "\"endpoints\" key maps URL host/path patterns to service names for "
+        "resolving requests.get/post/etc. call sites, e.g. "
+        "{\"endpoints\": {\"auth.internal\": \"auth-service\"}}. This replaces "
+        "the full depgraph.yaml manifest for now."
     ),
 )
 @click.option(
@@ -51,9 +54,11 @@ def cli() -> None:
 )
 def scan(repo_path: Path, services_path: Path, output_path: Path | None) -> None:
     """Scan a local repo and print (or save) the dependency edges found."""
-    known_services = json.loads(services_path.read_text(encoding="utf-8"))
+    manifest = json.loads(services_path.read_text(encoding="utf-8"))
+    known_endpoints = manifest.pop("endpoints", {})
+    known_services = manifest
 
-    edges = parse_repo(repo_path, known_services)
+    edges = parse_repo(repo_path, known_services, known_endpoints)
     text = export_edges(edges, output_path)
 
     if output_path is not None:
