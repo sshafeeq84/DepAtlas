@@ -1,0 +1,88 @@
+Metadata-Version: 2.4
+Name: depgraph
+Version: 0.1.0
+Summary: Reads your codebase and builds a living dependency graph across services, teams, and repositories.
+License: Apache-2.0
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: click>=8.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Dynamic: license-file
+
+# DepGraph
+
+An open-source agent that reads your codebase and builds a living dependency
+graph across services, teams, and repositories — so blockers surface before
+they cost you a sprint. See `docs/SPEC.md` for the full v1 specification.
+
+## Status
+
+This is an early, in-progress build. What works today:
+
+- `depgraph scan --repo <path> --services <manifest.json>` walks a local
+  Python codebase, parses every `.py` file with the standard library `ast`
+  module, and extracts `import` / `from ... import` statements that match a
+  known internal service.
+- Only imports that resolve against the `--services` manifest are emitted as
+  edges — everything else (stdlib, third-party packages) is correctly
+  ignored. See `tests/test_parsers/test_python_parser.py` for the proof.
+- Output is a JSON `DependencyEdge` list, printed to stdout or written to a
+  file with `--output`.
+
+Not yet built (see `docs/SPEC.md` for full v1 scope): the GitHub/CodeCommit
+connectors, the graph builder + SQLite store, CODEOWNERS ownership mapping,
+Java/JS parsers, the diff engine, and alerting.
+
+## Quick start
+
+```bash
+pip install -e ".[dev]"
+
+# Try it against the bundled fixture repo:
+depgraph scan \
+  --repo tests/fixtures/sample_repo/payments \
+  --services tests/fixtures/payments_services.json
+```
+
+The `--services` file is a small JSON manifest mapping importable module
+names to service names, plus a special `__self__` key naming the service
+being scanned:
+
+```json
+{
+  "__self__": "payments-service",
+  "auth_client": "auth-service"
+}
+```
+
+This is a stand-in for the fuller `depgraph.yaml` manifest described in
+`docs/SPEC.md` section 8 — that's one of the next pieces to build.
+
+## Running tests
+
+```bash
+pytest tests/ -v
+```
+
+## Repository structure
+
+```
+depgraph/
+├── depgraph/
+│   ├── cli/            # CLI entry points (click)
+│   ├── parsers/         # Language parsers (ast-based)
+│   ├── graph/           # Data model (DependencyEdge, ServiceNode) — graph builder/store TBD
+│   └── output/          # JSON / DOT exporters
+├── tests/
+│   ├── fixtures/         # Sample repos used by the test suite
+│   └── test_parsers/
+├── docs/
+│   └── SPEC.md
+└── pyproject.toml
+```
+
+## License
+
+Apache 2.0 (proposed — see `docs/SPEC.md` section 13.5).
