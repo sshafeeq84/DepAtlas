@@ -21,23 +21,37 @@ This is an early, in-progress build. What works today:
   emitted as edges — everything else (stdlib, third-party packages,
   unrecognized URLs) is correctly ignored. See
   `tests/test_parsers/test_python_parser.py` for the proof.
-- Output is a JSON `DependencyEdge` list, printed to stdout or written to a
-  file with `--output`.
+- Every `scan` persists its results to a local SQLite graph store
+  (default: `.depgraph/graph.db`). Rescanning a repo replaces just that
+  repo's edges, so the graph reflects the current state of the code
+  rather than accumulating stale data. Services discovered only as a
+  dependency (not yet scanned directly) get a placeholder node that
+  later gets filled in once their own repo is scanned — see
+  `tests/test_graph/test_store.py` and `test_builder.py`.
+- `depgraph query --service <name> --direction downstream|upstream` reads
+  the persisted graph: `downstream` shows what a service depends on;
+  `upstream` shows what depends on it (i.e. "what would this service's
+  changes affect?").
+- Output is also a JSON `DependencyEdge` list, printed to stdout or
+  written to a file with `--output`.
 
-Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc detection,
-the GitHub/CodeCommit connectors, the graph builder + SQLite store,
-CODEOWNERS ownership mapping, Java/JS parsers, the diff engine, and
-alerting.
+Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
+detection, the GitHub/CodeCommit connectors, CODEOWNERS ownership
+mapping, Java/JS parsers, the diff engine, and alerting.
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
 
-# Try it against the bundled fixture repo:
+# Scan the bundled fixture repo (persists to .depgraph/graph.db):
 depgraph scan \
   --repo tests/fixtures/sample_repo/payments \
   --services tests/fixtures/payments_services.json
+
+# Then query what it found:
+depgraph query --service payments-service --direction downstream
+depgraph query --service auth-service --direction upstream
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
