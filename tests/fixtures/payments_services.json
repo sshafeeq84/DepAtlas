@@ -1,0 +1,4 @@
+{
+  "__self__": "payments-service",
+  "auth_client": "auth-service"
+}
