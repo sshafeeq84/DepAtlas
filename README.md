@@ -8,19 +8,38 @@ they cost you a sprint. See `docs/SPEC.md` for the full v1 specification.
 
 This is an early, in-progress build. What works today:
 
-- `depgraph scan --repo <path> --services <manifest.json>` walks a local
-  Python codebase, parses every `.py` file with the standard library `ast`
-  module, and extracts:
-  - `import` / `from ... import` statements that match a known internal
-    service (high confidence).
-  - `requests.get/post/put/delete/patch(...)` call sites, resolved against
-    an optional `endpoints` registry in the manifest (medium confidence),
-    with a heuristic substring-match fallback against known service names
-    (low confidence) when there's no explicit registry entry.
+- `depgraph scan --repo <path> --services <manifest.json> --language python|java|javascript`
+  walks a local codebase and extracts dependencies using the AST for the
+  chosen language (defaults to `python`):
+  - **Python** (`ast` module): `import` / `from ... import` statements
+    (high confidence), and `requests.get/post/put/delete/patch(...)`
+    call sites resolved via an `endpoints` registry (medium) or a
+    heuristic name match (low).
+  - **Java** (`javalang`): `import` statements resolved against known
+    internal package namespaces (high confidence); `@FeignClient`
+    annotations, an explicit direct-dependency declaration (high
+    confidence, no URL matching needed); and RestTemplate/WebClient
+    -style call sites (`getForObject`, `postForObject`, `exchange`,
+    etc.), resolved the same medium/low way as Python's `requests`
+    calls. See `tests/test_parsers/test_java_parser.py`.
+  - **JavaScript/TypeScript** (`esprima`): `import`/`require(...)`
+    statements resolved against known internal package names (high
+    confidence); `fetch`/`axios.<method>`/`got.<method>` call sites
+    resolved the same medium/low way as the other languages; and
+    `package.json` `dependencies`/`devDependencies` entries, resolved as
+    `shared_library` edges (high confidence — a declared dependency is
+    an explicit fact, not a guess). **Known limitation:** esprima parses
+    JavaScript, not TypeScript-specific syntax (type annotations,
+    interfaces, etc.) — a `.ts`/`.tsx` file using real TypeScript syntax
+    fails to parse and is skipped with a warning rather than crashing
+    the whole scan. Full TypeScript support would need a Node-based
+    parser (`@babel/parser` or the TS compiler API, per SPEC.md 7.3),
+    which this project deliberately avoids as a runtime dependency for
+    now. See `tests/test_parsers/test_js_ts_parser.py`.
 - Only dependencies that resolve against the `--services` manifest are
-  emitted as edges — everything else (stdlib, third-party packages,
-  unrecognized URLs) is correctly ignored. See
-  `tests/test_parsers/test_python_parser.py` for the proof.
+  emitted as edges — everything else (stdlib/third-party imports,
+  unrecognized URLs) is correctly ignored. See the parser-specific test
+  files for the proof.
 - Every `scan` persists its results to a local SQLite graph store
   (default: `.depgraph/graph.db`). Rescanning a repo replaces just that
   repo's edges, so the graph reflects the current state of the code
@@ -45,20 +64,32 @@ This is an early, in-progress build. What works today:
   written to a file with `--output`.
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection, the `depgraph.yaml` manifest fallback for ownership, the
-GitHub/CodeCommit connectors, Java/JS parsers, the diff engine, and
-alerting.
+detection, full TypeScript syntax support, the `depgraph.yaml` manifest
+fallback for ownership, the GitHub/CodeCommit connectors, the diff
+engine, and alerting.
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
 
-# Scan the bundled fixture repo (persists to .depgraph/graph.db):
+# Scan the bundled Python fixture repo (persists to .depgraph/graph.db):
 depgraph scan \
   --repo tests/fixtures/sample_repo/payments \
   --services tests/fixtures/payments_services.json \
   --codeowners tests/fixtures/sample_repo/payments/CODEOWNERS
+
+# Scan the bundled Java fixture repo:
+depgraph scan \
+  --repo tests/fixtures/sample_repo_java/payments \
+  --services tests/fixtures/payments_services_java.json \
+  --language java
+
+# Scan the bundled JS fixture repo:
+depgraph scan \
+  --repo tests/fixtures/sample_repo_js/payments \
+  --services tests/fixtures/payments_services_js.json \
+  --language javascript
 
 # Then query what it found:
 depgraph query --service payments-service --direction downstream
