@@ -16,6 +16,7 @@ import click
 
 from depgraph.parsers.python_parser import parse_repo as parse_python_repo
 from depgraph.parsers.java_parser import parse_repo as parse_java_repo
+from depgraph.parsers.js_ts_parser import parse_repo as parse_js_ts_repo
 from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
@@ -26,6 +27,7 @@ DEFAULT_DB_PATH = Path(".depgraph/graph.db")
 PARSERS = {
     "python": parse_python_repo,
     "java": parse_java_repo,
+    "javascript": parse_js_ts_repo,
 }
 
 

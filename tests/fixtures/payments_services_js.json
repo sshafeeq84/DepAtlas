@@ -1,0 +1,9 @@
+{
+  "__self__": "payments-service",
+  "auth_client": "auth-service",
+  "shipping-lib": "shipping-library-service",
+  "shipping_client": "shipping-service",
+  "endpoints": {
+    "auth.internal": "auth-service"
+  }
+}

@@ -8,6 +8,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "click>=8.1",
     "javalang>=0.13",
+    "esprima>=4.0",
 ]
 
 [project.optional-dependencies]
