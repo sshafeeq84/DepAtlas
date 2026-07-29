@@ -1,7 +1,8 @@
 """DepGraph CLI.
 
-v1 slice so far: `scan` (persists to a local SQLite graph store) and
-`query` (reads back from it). No GitHub connector yet -- see SPEC.md
+v1 slice so far: `scan` (persists to a local SQLite graph store, with
+optional CODEOWNERS-based team resolution) and `query` (reads back from
+it, by service or by team). No GitHub connector yet -- see SPEC.md
 section 9 for the full planned command surface; `diff`, `watch`, `export`,
 `alerts`, `init` come later.
 """
@@ -17,6 +18,7 @@ from depgraph.parsers.python_parser import parse_repo
 from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
+from depgraph.ownership.codeowners import parse_codeowners
 
 DEFAULT_DB_PATH = Path(".depgraph/graph.db")
 
@@ -50,6 +52,17 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "--codeowners",
+    "codeowners_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to a CODEOWNERS file. If supplied, the scanned service's "
+        "team is resolved as the majority owner across its files "
+        "(SPEC.md section 8, priority 1)."
+    ),
+)
+@click.option(
     "--output",
     "output_path",
     type=click.Path(path_type=Path),
@@ -64,15 +77,23 @@ def cli() -> None:
     show_default=True,
     help="Path to the SQLite graph store.",
 )
-def scan(repo_path: Path, services_path: Path, output_path: Path | None, db_path: Path) -> None:
+def scan(
+    repo_path: Path,
+    services_path: Path,
+    codeowners_path: Path | None,
+    output_path: Path | None,
+    db_path: Path,
+) -> None:
     """Scan a local repo, persist the results, and print the edges found."""
     manifest = json.loads(services_path.read_text(encoding="utf-8"))
     known_endpoints = manifest.pop("endpoints", {})
     known_services = manifest
     self_service = known_services.get("__self__", "unknown-service")
 
+    codeowners_rules = parse_codeowners(codeowners_path) if codeowners_path else None
+
     edges = parse_repo(repo_path, known_services, known_endpoints)
-    nodes = build_graph(edges, repo_path, self_service)
+    nodes = build_graph(edges, repo_path, self_service, codeowners_rules=codeowners_rules)
 
     store = GraphStore(db_path)
     store.upsert_services(nodes)
@@ -81,8 +102,12 @@ def scan(repo_path: Path, services_path: Path, output_path: Path | None, db_path
 
     text = export_edges(edges, output_path)
     click.echo(text)
+
+    self_node = next(n for n in nodes if n.id == self_service)
+    team_note = f", team={self_node.team}" if self_node.team else ", team=unowned"
     click.echo(
-        f"\nPersisted {len(edges)} edge(s) and {len(nodes)} service node(s) to {db_path}",
+        f"\nPersisted {len(edges)} edge(s) and {len(nodes)} service node(s) to {db_path}"
+        f"{team_note}",
         err=True,
     )
     if output_path is not None:
@@ -90,15 +115,17 @@ def scan(repo_path: Path, services_path: Path, output_path: Path | None, db_path
 
 
 @cli.command()
-@click.option("--service", "service_name", required=True, help="Service name to query.")
+@click.option("--service", "service_name", default=None, help="Service name to query.")
+@click.option("--team", "team_name", default=None, help="List services owned by this team.")
 @click.option(
     "--direction",
     type=click.Choice(["downstream", "upstream"]),
     default="downstream",
     show_default=True,
     help=(
-        "downstream = what this service depends on. "
-        "upstream = what depends on this service (i.e. 'impact of')."
+        "Only used with --service. downstream = what this service "
+        "depends on. upstream = what depends on this service "
+        "(i.e. 'impact of')."
     ),
 )
 @click.option(
@@ -109,9 +136,26 @@ def scan(repo_path: Path, services_path: Path, output_path: Path | None, db_path
     show_default=True,
     help="Path to the SQLite graph store.",
 )
-def query(service_name: str, direction: str, db_path: Path) -> None:
-    """Query the persisted graph for a service's dependencies."""
+def query(service_name: str | None, team_name: str | None, direction: str, db_path: Path) -> None:
+    """Query the persisted graph, either by --service or by --team."""
+    if not service_name and not team_name:
+        raise click.UsageError("Provide either --service or --team.")
+    if service_name and team_name:
+        raise click.UsageError("Provide only one of --service or --team, not both.")
+
     store = GraphStore(db_path)
+
+    if team_name:
+        services = [s for s in store.all_services() if s["team"] == team_name]
+        store.close()
+        if not services:
+            click.echo(f"No services found owned by '{team_name}'.")
+            return
+        click.echo(f"Services owned by '{team_name}':")
+        for svc in services:
+            click.echo(f"  {svc['id']}  (repo: {svc['repo'] or 'unknown'})")
+        return
+
     edges = store.edges_for_service(service_name, direction)
     store.close()
 
