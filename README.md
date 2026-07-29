@@ -31,13 +31,23 @@ This is an early, in-progress build. What works today:
 - `depgraph query --service <name> --direction downstream|upstream` reads
   the persisted graph: `downstream` shows what a service depends on;
   `upstream` shows what depends on it (i.e. "what would this service's
-  changes affect?").
+  changes affect?"). `depgraph query --team <name>` instead lists every
+  service owned by that team.
+- `scan --codeowners <path>` resolves the scanned service's team from a
+  CODEOWNERS file (SPEC.md section 8, priority 1): every file's owner is
+  resolved individually (last matching rule wins, same as GitHub's own
+  CODEOWNERS behavior), and the service is attributed to whichever team
+  owns the majority of its files. A service scanned without
+  `--codeowners`, or with no matching rule, is left unowned. See
+  `tests/test_ownership/test_codeowners.py` and the team-resolution
+  tests in `test_graph/test_builder.py`.
 - Output is also a JSON `DependencyEdge` list, printed to stdout or
   written to a file with `--output`.
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection, the GitHub/CodeCommit connectors, CODEOWNERS ownership
-mapping, Java/JS parsers, the diff engine, and alerting.
+detection, the `depgraph.yaml` manifest fallback for ownership, the
+GitHub/CodeCommit connectors, Java/JS parsers, the diff engine, and
+alerting.
 
 ## Quick start
 
@@ -47,11 +57,13 @@ pip install -e ".[dev]"
 # Scan the bundled fixture repo (persists to .depgraph/graph.db):
 depgraph scan \
   --repo tests/fixtures/sample_repo/payments \
-  --services tests/fixtures/payments_services.json
+  --services tests/fixtures/payments_services.json \
+  --codeowners tests/fixtures/sample_repo/payments/CODEOWNERS
 
 # Then query what it found:
 depgraph query --service payments-service --direction downstream
 depgraph query --service auth-service --direction upstream
+depgraph query --team @payments-team
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
