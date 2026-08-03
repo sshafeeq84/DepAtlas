@@ -9,6 +9,7 @@ dependencies = [
     "click>=8.1",
     "javalang>=0.13",
     "esprima>=4.0",
+    "requests>=2.28",
 ]
 
 [project.optional-dependencies]

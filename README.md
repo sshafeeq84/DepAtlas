@@ -8,9 +8,21 @@ they cost you a sprint. See `docs/SPEC.md` for the full v1 specification.
 
 This is an early, in-progress build. What works today:
 
-- `depgraph scan --repo <path> --services <manifest.json> --language python|java|javascript`
-  walks a local codebase and extracts dependencies using the AST for the
-  chosen language (defaults to `python`):
+- `depgraph scan --repo <path> ...` or `depgraph scan --github-repo owner/repo ...`
+  (use one or the other) walks a codebase and extracts dependencies
+  using the AST for the chosen `--language` (python/java/javascript,
+  defaults to `python`):
+  - **`--repo <path>`**: scans a local directory directly.
+  - **`--github-repo owner/repo`**: downloads the repo via the GitHub
+    REST API (a zip of the given `--ref`, default the repo's default
+    branch), extracts it into a local cache (default
+    `.depgraph/cache/`), and scans that. Requires a
+    `DEPGRAPH_GITHUB_TOKEN` environment variable — never accepted as a
+    CLI argument or written to disk (SPEC.md section 12). Uses the
+    REST API + zip download rather than `git clone`, so there's no
+    dependency on git being installed. See
+    `tests/test_connectors/test_github.py` (all network calls are
+    mocked — no real GitHub access needed to run the test suite).
   - **Python** (`ast` module): `import` / `from ... import` statements
     (high confidence), and `requests.get/post/put/delete/patch(...)`
     call sites resolved via an `endpoints` registry (medium) or a
@@ -65,8 +77,8 @@ This is an early, in-progress build. What works today:
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
 detection, full TypeScript syntax support, the `depgraph.yaml` manifest
-fallback for ownership, the GitHub/CodeCommit connectors, the diff
-engine, and alerting.
+fallback for ownership, the CodeCommit connector, the diff engine, and
+alerting.
 
 ## Quick start
 
@@ -90,6 +102,12 @@ depgraph scan \
   --repo tests/fixtures/sample_repo_js/payments \
   --services tests/fixtures/payments_services_js.json \
   --language javascript
+
+# Scan a real GitHub repo instead of a local directory
+# (requires DEPGRAPH_GITHUB_TOKEN to be set):
+depgraph scan \
+  --github-repo sshafeeq84/Depgraph \
+  --services tests/fixtures/payments_services.json
 
 # Then query what it found:
 depgraph query --service payments-service --direction downstream
