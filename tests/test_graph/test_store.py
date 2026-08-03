@@ -73,3 +73,54 @@ def test_edges_for_service_downstream_vs_upstream(store):
     assert len(upstream) == 1
     assert downstream[0]["target_service"] == "auth-service"
     assert upstream[0]["source_service"] == "payments-service"
+
+
+def test_save_snapshot_returns_incrementing_ids(store):
+    id1 = store.save_snapshot("/repos/payments", [])
+    id2 = store.save_snapshot("/repos/payments", [])
+
+    assert id2 == id1 + 1
+
+
+def test_get_snapshot_round_trips_edges(store):
+    edges = [_edge("payments-service", "auth-service", "/repos/payments/charge.py")]
+    snapshot_id = store.save_snapshot("/repos/payments", edges)
+
+    snapshot = store.get_snapshot(snapshot_id)
+
+    assert snapshot["repo"] == "/repos/payments"
+    assert len(snapshot["edges"]) == 1
+    assert snapshot["edges"][0]["target_service"] == "auth-service"
+
+
+def test_get_snapshot_returns_none_for_unknown_id(store):
+    assert store.get_snapshot(999) is None
+
+
+def test_list_snapshots_most_recent_first(store):
+    id1 = store.save_snapshot("/repos/payments", [])
+    id2 = store.save_snapshot("/repos/payments", [])
+
+    snapshots = store.list_snapshots(repo="/repos/payments")
+
+    assert [s["id"] for s in snapshots] == [id2, id1]
+
+
+def test_list_snapshots_filters_by_repo(store):
+    store.save_snapshot("/repos/payments", [])
+    store.save_snapshot("/repos/auth", [])
+
+    payments_snapshots = store.list_snapshots(repo="/repos/payments")
+
+    assert len(payments_snapshots) == 1
+    assert payments_snapshots[0]["repo"] == "/repos/payments"
+
+
+def test_save_snapshot_does_not_replace_previous_snapshots(store):
+    # Unlike replace_edges_for_repo, snapshots accumulate -- this is
+    # what gives the diff engine a real timeline.
+    store.save_snapshot("/repos/payments", [])
+    store.save_snapshot("/repos/payments", [])
+    store.save_snapshot("/repos/payments", [])
+
+    assert len(store.list_snapshots(repo="/repos/payments")) == 3

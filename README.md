@@ -85,9 +85,22 @@ This is an early, in-progress build. What works today:
 - Output is also a JSON `DependencyEdge` list, printed to stdout or
   written to a file with `--output`.
 
+- Every `scan` also saves an immutable **snapshot** of that repo's edge
+  set (SPEC.md section 5's "Versions graph per commit SHA"). Unlike the
+  live `edges` table (which always reflects only the current state),
+  snapshots accumulate — this is what the diff engine compares.
+  `depgraph snapshots [--repo <path>]` lists them with their ids.
+- `depgraph diff --from <id> --to <id>` or `depgraph diff --last 2
+  --repo <path>` (SPEC.md section 9) compares two snapshots and reports
+  which dependencies were added or removed. Confidence-only changes on
+  an otherwise-unchanged edge aren't reported as added/removed — only
+  genuine appearance/disappearance of a dependency counts. See
+  `tests/test_intelligence/test_diff.py` and the snapshot tests in
+  `test_graph/test_store.py`.
+
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
 detection, full TypeScript syntax support, the `depgraph.yaml` manifest
-fallback for ownership, the diff engine, and alerting.
+fallback for ownership, and alerting.
 
 ## Quick start
 
@@ -130,6 +143,11 @@ depgraph scan \
 depgraph query --service payments-service --direction downstream
 depgraph query --service auth-service --direction upstream
 depgraph query --team @payments-team
+
+# See what changed between scans:
+depgraph snapshots --repo tests/fixtures/sample_repo/payments
+depgraph diff --last 2 --repo tests/fixtures/sample_repo/payments
+depgraph diff --from 1 --to 2
 ```
 
 The `--services` file is a small JSON manifest mapping importable module

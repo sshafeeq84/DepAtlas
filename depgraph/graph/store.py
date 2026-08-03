@@ -14,11 +14,20 @@ Upsert model:
     set. This means a rescan reflects the current state of the code
     exactly, instead of accumulating stale edges from files that have
     since changed or been deleted.
+
+Snapshots (SPEC.md section 5, "Graph Builder" -> "Versions graph per
+commit SHA", and section 6.3's GraphSnapshot shape) are additive, not
+replaced: every `scan` appends a new snapshot row containing that scan's
+full edge set as JSON, so the diff engine (SPEC.md's Intelligence Layer)
+has a timeline to compare against. Unlike the `edges` table (which always
+reflects only the *current* state), snapshots accumulate on purpose.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from depgraph.graph.models import DependencyEdge, ServiceNode
@@ -42,6 +51,13 @@ CREATE TABLE IF NOT EXISTS edges (
     source_line INTEGER NOT NULL,
     confidence TEXT NOT NULL,
     detected_at_sha TEXT
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    edges_json TEXT NOT NULL
 );
 """
 
@@ -132,6 +148,56 @@ class GraphStore:
         ).fetchall()
         columns = [c[0] for c in self._conn.execute("SELECT * FROM edges").description]
         return [dict(zip(columns, row)) for row in rows]
+
+    def save_snapshot(self, repo: str, edges: list[DependencyEdge]) -> int:
+        """Persist a new snapshot of this repo's edge set and return its
+        auto-generated snapshot id. Called once per `scan`, in addition
+        to (not instead of) updating the `edges` table -- this is what
+        gives the diff engine a timeline to compare against.
+        """
+        edges_json = json.dumps([e.to_dict() for e in edges])
+        created_at = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            "INSERT INTO snapshots (repo, created_at, edges_json) VALUES (?, ?, ?)",
+            (repo, created_at, edges_json),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def get_snapshot(self, snapshot_id: int) -> dict | None:
+        """Return {"id", "repo", "created_at", "edges"} for a snapshot,
+        or None if no snapshot with that id exists.
+        """
+        row = self._conn.execute(
+            "SELECT id, repo, created_at, edges_json FROM snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "repo": row[1],
+            "created_at": row[2],
+            "edges": json.loads(row[3]),
+        }
+
+    def list_snapshots(self, repo: str | None = None, limit: int | None = None) -> list[dict]:
+        """List snapshots (most recent first), optionally filtered to one
+        repo. Does not include the edges themselves -- just enough to let
+        a user pick snapshot ids for `diff --from/--to`.
+        """
+        query = "SELECT id, repo, created_at FROM snapshots"
+        params: list = []
+        if repo is not None:
+            query += " WHERE repo = ?"
+            params.append(repo)
+        query += " ORDER BY id DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        rows = self._conn.execute(query, params).fetchall()
+        return [{"id": r[0], "repo": r[1], "created_at": r[2]} for r in rows]
 
     def close(self) -> None:
         self._conn.close()
