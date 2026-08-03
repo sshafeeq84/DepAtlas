@@ -1,10 +1,10 @@
 """DepGraph CLI.
 
 v1 slice so far: `scan` (persists to a local SQLite graph store, with
-optional CODEOWNERS-based team resolution) and `query` (reads back from
-it, by service or by team). No GitHub connector yet -- see SPEC.md
-section 9 for the full planned command surface; `diff`, `watch`, `export`,
-`alerts`, `init` come later.
+optional CODEOWNERS-based team resolution, against either a local
+directory or a GitHub repo) and `query` (reads back from it, by service
+or by team). SPEC.md section 9 has the full planned command surface;
+`diff`, `watch`, `export`, `alerts`, `init` come later.
 """
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
+from depgraph.connectors.github import GitHubConnectorError, fetch_repo, get_token
 
 DEFAULT_DB_PATH = Path(".depgraph/graph.db")
+DEFAULT_CACHE_DIR = Path(".depgraph/cache")
 
 PARSERS = {
     "python": parse_python_repo,
@@ -40,9 +42,34 @@ def cli() -> None:
 @click.option(
     "--repo",
     "repo_path",
-    required=True,
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Path to a local repo directory to scan.",
+    default=None,
+    help="Path to a local repo directory to scan. Use this OR --github-repo.",
+)
+@click.option(
+    "--github-repo",
+    "github_repo",
+    default=None,
+    help=(
+        "A GitHub repo to scan, as 'owner/repo' (e.g. 'sshafeeq84/Depgraph'). "
+        "Downloaded via the GitHub API using the token in the "
+        "DEPGRAPH_GITHUB_TOKEN environment variable. Use this OR --repo."
+    ),
+)
+@click.option(
+    "--ref",
+    "ref",
+    default="HEAD",
+    show_default=True,
+    help="Branch, tag, or commit SHA to scan (only used with --github-repo).",
+)
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_CACHE_DIR,
+    show_default=True,
+    help="Where downloaded GitHub repos are extracted (only used with --github-repo).",
 )
 @click.option(
     "--services",
@@ -94,14 +121,33 @@ def cli() -> None:
     help="Path to the SQLite graph store.",
 )
 def scan(
-    repo_path: Path,
+    repo_path: Path | None,
+    github_repo: str | None,
+    ref: str,
+    cache_dir: Path,
     services_path: Path,
     language: str,
     codeowners_path: Path | None,
     output_path: Path | None,
     db_path: Path,
 ) -> None:
-    """Scan a local repo, persist the results, and print the edges found."""
+    """Scan a repo (local or GitHub), persist the results, and print the edges found."""
+    if not repo_path and not github_repo:
+        raise click.UsageError("Provide either --repo or --github-repo.")
+    if repo_path and github_repo:
+        raise click.UsageError("Provide only one of --repo or --github-repo, not both.")
+
+    if github_repo:
+        if "/" not in github_repo:
+            raise click.UsageError("--github-repo must be in 'owner/repo' form.")
+        owner, repo_name = github_repo.split("/", 1)
+        try:
+            token = get_token()
+            click.echo(f"Downloading {github_repo}@{ref} from GitHub...", err=True)
+            repo_path = fetch_repo(owner, repo_name, token, cache_dir, ref)
+        except GitHubConnectorError as exc:
+            raise click.ClickException(str(exc))
+
     manifest = json.loads(services_path.read_text(encoding="utf-8"))
     known_endpoints = manifest.pop("endpoints", {})
     known_services = manifest
