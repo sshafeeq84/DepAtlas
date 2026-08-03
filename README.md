@@ -74,14 +74,19 @@ This is an early, in-progress build. What works today:
   `upstream` shows what depends on it (i.e. "what would this service's
   changes affect?"). `depgraph query --team <name>` instead lists every
   service owned by that team.
-- `scan --codeowners <path>` resolves the scanned service's team from a
-  CODEOWNERS file (SPEC.md section 8, priority 1): every file's owner is
-  resolved individually (last matching rule wins, same as GitHub's own
-  CODEOWNERS behavior), and the service is attributed to whichever team
-  owns the majority of its files. A service scanned without
-  `--codeowners`, or with no matching rule, is left unowned. See
-  `tests/test_ownership/test_codeowners.py` and the team-resolution
-  tests in `test_graph/test_builder.py`.
+- Team ownership resolves in the priority order from SPEC.md section 8:
+  1. **`scan --codeowners <path>`**: every file's owner is resolved
+     individually (last matching rule wins, same as GitHub's own
+     CODEOWNERS behavior), and the service is attributed to whichever
+     team owns the majority of its files. See
+     `tests/test_ownership/test_codeowners.py`.
+  2. **`scan --ownership-manifest <path>`**: a `depgraph.yaml` manifest
+     mapping service names directly to teams, used only when
+     `--codeowners` wasn't supplied, or resolved no team for this repo.
+     See `tests/test_ownership/test_manifest.py`.
+  3. **Unowned**: if neither resolves a team, the service is left
+     unowned. Priority-ordering tests for all of this live in
+     `test_graph/test_builder.py`.
 - Output is also a JSON `DependencyEdge` list, printed to stdout or
   written to a file with `--output`.
 
@@ -99,8 +104,7 @@ This is an early, in-progress build. What works today:
   `test_graph/test_store.py`.
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection, full TypeScript syntax support, the `depgraph.yaml` manifest
-fallback for ownership, and alerting.
+detection, full TypeScript syntax support, alerting.
 
 ## Quick start
 
@@ -148,6 +152,13 @@ depgraph query --team @payments-team
 depgraph snapshots --repo tests/fixtures/sample_repo/payments
 depgraph diff --last 2 --repo tests/fixtures/sample_repo/payments
 depgraph diff --from 1 --to 2
+
+# Resolve ownership from a depgraph.yaml manifest instead of CODEOWNERS
+# (falls back to this only when --codeowners is absent or unresolved):
+depgraph scan \
+  --repo tests/fixtures/sample_repo/payments \
+  --services tests/fixtures/payments_services.json \
+  --ownership-manifest tests/fixtures/depgraph.yaml
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
