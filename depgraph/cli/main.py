@@ -21,6 +21,7 @@ from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
+from depgraph.intelligence.diff import compute_diff
 from depgraph.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
 from depgraph.connectors.codecommit import (
     CodeCommitConnectorError,
@@ -182,6 +183,13 @@ def scan(
         except CodeCommitConnectorError as exc:
             raise click.ClickException(str(exc))
 
+    # Normalize to an absolute path now, once -- everything downstream
+    # (the edges table, the services table, and snapshots) keys off this
+    # exact string, so a relative "--repo repo" and an equivalent
+    # absolute "--repo /full/path/to/repo" must resolve to the same
+    # value, or repeat scans and `diff --last` silently stop matching up.
+    repo_path = repo_path.resolve()
+
     manifest = json.loads(services_path.read_text(encoding="utf-8"))
     known_endpoints = manifest.pop("endpoints", {})
     known_services = manifest
@@ -198,6 +206,7 @@ def scan(
     store = GraphStore(db_path)
     store.upsert_services(nodes)
     store.replace_edges_for_repo(str(repo_path), edges)
+    snapshot_id = store.save_snapshot(str(repo_path), edges)
     store.close()
 
     text = export_edges(edges, output_path)
@@ -207,7 +216,7 @@ def scan(
     team_note = f", team={self_node.team}" if self_node.team else ", team=unowned"
     click.echo(
         f"\nPersisted {len(edges)} edge(s) and {len(nodes)} service node(s) to {db_path}"
-        f"{team_note}",
+        f"{team_note} (snapshot #{snapshot_id})",
         err=True,
     )
     if output_path is not None:
@@ -278,6 +287,137 @@ def query(service_name: str | None, team_name: str | None, direction: str, db_pa
                 f"[{edge['type']}, {edge['confidence']}]  "
                 f"({edge['source_file']}:{edge['source_line']})"
             )
+
+
+@cli.command()
+@click.option(
+    "--repo",
+    "repo_filter",
+    default=None,
+    help="Limit to snapshots of this repo path (as recorded at scan time).",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of snapshots to list.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def snapshots(repo_filter: str | None, limit: int, db_path: Path) -> None:
+    """List saved snapshots (most recent first) -- use their ids with `diff --from/--to`."""
+    if repo_filter is not None:
+        repo_filter = str(Path(repo_filter).resolve())
+
+    store = GraphStore(db_path)
+    rows = store.list_snapshots(repo=repo_filter, limit=limit)
+    store.close()
+
+    if not rows:
+        click.echo("No snapshots found.")
+        return
+
+    for row in rows:
+        click.echo(f"#{row['id']}  {row['created_at']}  {row['repo']}")
+
+
+@cli.command()
+@click.option("--from", "from_snapshot_id", type=int, default=None)
+@click.option("--to", "to_snapshot_id", type=int, default=None)
+@click.option(
+    "--last",
+    "last_n",
+    type=int,
+    default=None,
+    help="Compare the two most recent snapshots for --repo (i.e. --last 2).",
+)
+@click.option(
+    "--repo",
+    "repo_filter",
+    default=None,
+    help="Repo path to use with --last (required when using --last).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def diff(
+    from_snapshot_id: int | None,
+    to_snapshot_id: int | None,
+    last_n: int | None,
+    repo_filter: str | None,
+    db_path: Path,
+) -> None:
+    """Compare two snapshots and report added/removed dependencies.
+
+    Either give explicit ids with --from/--to (see `depgraph snapshots`
+    for available ids), or use --last 2 --repo <path> to compare a repo's
+    two most recent scans.
+    """
+    store = GraphStore(db_path)
+
+    if last_n is not None:
+        if last_n != 2:
+            store.close()
+            raise click.UsageError("Only '--last 2' is currently supported.")
+        if not repo_filter:
+            store.close()
+            raise click.UsageError("--last requires --repo.")
+        repo_filter = str(Path(repo_filter).resolve())
+        recent = store.list_snapshots(repo=repo_filter, limit=2)
+        if len(recent) < 2:
+            store.close()
+            click.echo(f"Not enough snapshots for '{repo_filter}' to compare (need 2).")
+            return
+        to_snapshot_id, from_snapshot_id = recent[0]["id"], recent[1]["id"]
+    elif from_snapshot_id is None or to_snapshot_id is None:
+        store.close()
+        raise click.UsageError("Provide either --from/--to, or --last 2 --repo <path>.")
+
+    old_snapshot = store.get_snapshot(from_snapshot_id)
+    new_snapshot = store.get_snapshot(to_snapshot_id)
+    store.close()
+
+    if old_snapshot is None:
+        raise click.ClickException(f"No snapshot #{from_snapshot_id} found.")
+    if new_snapshot is None:
+        raise click.ClickException(f"No snapshot #{to_snapshot_id} found.")
+
+    result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+
+    click.echo(
+        f"Diff: #{from_snapshot_id} ({old_snapshot['created_at']}) "
+        f"-> #{to_snapshot_id} ({new_snapshot['created_at']})"
+    )
+
+    if not result["added"] and not result["removed"]:
+        click.echo("No changes.")
+        return
+
+    for edge in result["added"]:
+        click.echo(
+            f"  + {edge['source_service']} -> {edge['target_service']}  "
+            f"[{edge['type']}, {edge['confidence']}]  "
+            f"({edge['source_file']}:{edge['source_line']})"
+        )
+    for edge in result["removed"]:
+        click.echo(
+            f"  - {edge['source_service']} -> {edge['target_service']}  "
+            f"[{edge['type']}, {edge['confidence']}]  "
+            f"({edge['source_file']}:{edge['source_line']})"
+        )
 
 
 if __name__ == "__main__":
