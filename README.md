@@ -102,9 +102,34 @@ This is an early, in-progress build. What works today:
   genuine appearance/disappearance of a dependency counts. See
   `tests/test_intelligence/test_diff.py` and the snapshot tests in
   `test_graph/test_store.py`.
+- **Alerts** (SPEC.md section 10): four of the five defined alert types
+  are implemented and checked automatically after every `scan` (disable
+  with `--no-alerts`), or on demand across the whole stored graph via
+  `depgraph alerts [--severity high|medium|low]`:
+  - `NEW_CROSS_TEAM_DEPENDENCY` (medium) — a newly-added edge (from a
+    diff) whose source and target services have different, both-known
+    teams.
+  - `HIGH_FAN_IN` (medium) — a service's distinct dependent count meets
+    or exceeds a threshold (default 10, `--fan-in-threshold` to change).
+  - `ORPHANED_SERVICE` (low) — a service with no dependents and no
+    dependencies at all.
+  - `UNOWNED_SERVICE` (low) — a service with no resolved team, from
+    either CODEOWNERS or the manifest fallback.
+  - **Not implemented: `BREAKING_CHANGE` (high).** Its trigger ("a
+    public interface removed or signature changed in a service with
+    known dependents") needs tracking function/method signatures across
+    scans — a fundamentally different analysis than the dependency-edge
+    model this project builds. `DependencyEdge` records "X depends on
+    Y," not "what does Y's public interface look like" — there's
+    nothing in the current data model to diff a signature against. This
+    is a deliberate scope boundary; see
+    `depgraph/intelligence/alerts.py`'s module docstring.
+  - See `tests/test_intelligence/test_alerts.py` for the other four,
+    each covered by both a positive and negative case.
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection, full TypeScript syntax support, alerting.
+detection, full TypeScript syntax support, and BREAKING_CHANGE alerting
+(see above for why).
 
 ## Quick start
 
@@ -159,6 +184,11 @@ depgraph scan \
   --repo tests/fixtures/sample_repo/payments \
   --services tests/fixtures/payments_services.json \
   --ownership-manifest tests/fixtures/depgraph.yaml
+
+# Alerts run automatically after every scan (disable with --no-alerts),
+# or check the whole stored graph on demand:
+depgraph alerts
+depgraph alerts --severity medium
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
