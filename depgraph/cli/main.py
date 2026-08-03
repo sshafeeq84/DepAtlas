@@ -21,6 +21,7 @@ from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
+from depgraph.ownership.manifest import parse_ownership_manifest
 from depgraph.intelligence.diff import compute_diff
 from depgraph.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
 from depgraph.connectors.codecommit import (
@@ -129,6 +130,18 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "--ownership-manifest",
+    "ownership_manifest_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to a depgraph.yaml ownership manifest, mapping service "
+        "names directly to teams. Used only when --codeowners is not "
+        "supplied, or resolves no team for this repo "
+        "(SPEC.md section 8, priority 2)."
+    ),
+)
+@click.option(
     "--output",
     "output_path",
     type=click.Path(path_type=Path),
@@ -153,6 +166,7 @@ def scan(
     services_path: Path,
     language: str,
     codeowners_path: Path | None,
+    ownership_manifest_path: Path | None,
     output_path: Path | None,
     db_path: Path,
 ) -> None:
@@ -196,11 +210,19 @@ def scan(
     self_service = known_services.get("__self__", "unknown-service")
 
     codeowners_rules = parse_codeowners(codeowners_path) if codeowners_path else None
+    manifest_teams = (
+        parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
+    )
 
     parse_repo = PARSERS[language]
     edges = parse_repo(repo_path, known_services, known_endpoints)
     nodes = build_graph(
-        edges, repo_path, self_service, language=language, codeowners_rules=codeowners_rules
+        edges,
+        repo_path,
+        self_service,
+        language=language,
+        codeowners_rules=codeowners_rules,
+        manifest_teams=manifest_teams,
     )
 
     store = GraphStore(db_path)
