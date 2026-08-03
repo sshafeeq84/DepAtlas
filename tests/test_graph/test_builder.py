@@ -59,7 +59,10 @@ def test_team_resolved_via_codeowners_majority(tmp_path):
     assert self_node.team == "@payments-team"
 
 
-def test_dependency_placeholder_never_gets_a_team(tmp_path):
+def test_dependency_placeholder_gets_no_team_from_codeowners_alone(tmp_path):
+    # CODEOWNERS can't resolve a placeholder's team -- there's no file
+    # tree for a service we haven't scanned directly. (The manifest CAN
+    # resolve it -- see test_dependency_placeholder_gets_team_from_manifest.)
     from depgraph.ownership.codeowners import parse_codeowners
 
     (tmp_path / "a.py").write_text("# fake")
@@ -71,6 +74,24 @@ def test_dependency_placeholder_never_gets_a_team(tmp_path):
 
     dep_node = next(n for n in nodes if n.id == "auth-service")
     assert dep_node.team is None
+
+
+def test_dependency_placeholder_gets_team_from_manifest(tmp_path):
+    # Regression test: the manifest is a flat name->team lookup that
+    # doesn't require having scanned a service's own repo, so it should
+    # resolve a placeholder's team too -- not just the self_service's.
+    manifest_teams = {
+        "payments-service": "payments-team",
+        "auth-service": "platform-team",
+    }
+    edges = [_edge("payments-service", "auth-service")]
+
+    nodes = build_graph(
+        edges, tmp_path, self_service="payments-service", manifest_teams=manifest_teams
+    )
+
+    dep_node = next(n for n in nodes if n.id == "auth-service")
+    assert dep_node.team == "platform-team"
 
 
 def test_codeowners_resolves_non_python_files_too(tmp_path):

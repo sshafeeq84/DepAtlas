@@ -104,14 +104,21 @@ def build_graph(
             )
         else:
             # A dependency we know about only because something points at
-            # it -- not yet scanned directly, so repo/language/team are
-            # unknown.
+            # it -- not yet scanned directly, so repo/language are
+            # unknown. CODEOWNERS can't resolve a team for it (there's no
+            # file tree to check), but the manifest is a flat name->team
+            # lookup that doesn't require having scanned the service's
+            # own repo -- SPEC.md's own depgraph.yaml example lists every
+            # service org-wide, not just the one being scanned, so it
+            # should resolve here too.
+            placeholder_team = manifest_teams.get(name) if manifest_teams else None
             nodes.append(
                 ServiceNode(
                     id=name,
                     name=name,
                     repo="",
                     language="",
+                    team=placeholder_team,
                 )
             )
 

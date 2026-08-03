@@ -23,6 +23,13 @@ from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
 from depgraph.ownership.manifest import parse_ownership_manifest
 from depgraph.intelligence.diff import compute_diff
+from depgraph.intelligence.alerts import (
+    check_high_fan_in,
+    check_new_cross_team_dependencies,
+    check_orphaned_service,
+    check_unowned_service,
+    DEFAULT_HIGH_FAN_IN_THRESHOLD,
+)
 from depgraph.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
 from depgraph.connectors.codecommit import (
     CodeCommitConnectorError,
@@ -156,6 +163,24 @@ def cli() -> None:
     show_default=True,
     help="Path to the SQLite graph store.",
 )
+@click.option(
+    "--alerts/--no-alerts",
+    "alerts_enabled",
+    default=True,
+    help=(
+        "Check for NEW_CROSS_TEAM_DEPENDENCY, ORPHANED_SERVICE, "
+        "UNOWNED_SERVICE, and HIGH_FAN_IN after this scan and print any "
+        "that trigger (SPEC.md section 10). On by default."
+    ),
+)
+@click.option(
+    "--fan-in-threshold",
+    "fan_in_threshold",
+    type=int,
+    default=DEFAULT_HIGH_FAN_IN_THRESHOLD,
+    show_default=True,
+    help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
+)
 def scan(
     repo_path: Path | None,
     github_repo: str | None,
@@ -169,6 +194,8 @@ def scan(
     ownership_manifest_path: Path | None,
     output_path: Path | None,
     db_path: Path,
+    alerts_enabled: bool,
+    fan_in_threshold: int,
 ) -> None:
     """Scan a repo (local, GitHub, or CodeCommit), persist the results, and print the edges found."""
     sources_given = [s for s in (repo_path, github_repo, codecommit_repo) if s]
@@ -229,6 +256,30 @@ def scan(
     store.upsert_services(nodes)
     store.replace_edges_for_repo(str(repo_path), edges)
     snapshot_id = store.save_snapshot(str(repo_path), edges)
+
+    triggered_alerts = []
+    if alerts_enabled:
+        service_teams = {s["id"]: s["team"] for s in store.all_services()}
+
+        # NEW_CROSS_TEAM_DEPENDENCY needs a diff -- only possible once
+        # this repo has at least two snapshots to compare.
+        recent = store.list_snapshots(repo=str(repo_path), limit=2)
+        if len(recent) == 2:
+            old_snapshot = store.get_snapshot(recent[1]["id"])
+            new_snapshot = store.get_snapshot(recent[0]["id"])
+            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+            triggered_alerts += check_new_cross_team_dependencies(
+                diff_result["added"], service_teams
+            )
+
+        # The other three are point-in-time checks against the service
+        # just scanned.
+        downstream = store.edges_for_service(self_service, direction="downstream")
+        upstream = store.edges_for_service(self_service, direction="upstream")
+        triggered_alerts += check_orphaned_service(self_service, downstream, upstream)
+        triggered_alerts += check_unowned_service(self_service, service_teams.get(self_service))
+        triggered_alerts += check_high_fan_in(self_service, upstream, threshold=fan_in_threshold)
+
     store.close()
 
     text = export_edges(edges, output_path)
@@ -243,6 +294,9 @@ def scan(
     )
     if output_path is not None:
         click.echo(f"Also wrote JSON to {output_path}", err=True)
+
+    for alert in triggered_alerts:
+        click.echo(f"[{alert.severity.upper()}] {alert.type}: {alert.message}", err=True)
 
 
 @cli.command()
@@ -440,6 +494,75 @@ def diff(
             f"[{edge['type']}, {edge['confidence']}]  "
             f"({edge['source_file']}:{edge['source_line']})"
         )
+
+
+@cli.command()
+@click.option(
+    "--severity",
+    "severity_filter",
+    type=click.Choice(["high", "medium", "low"]),
+    default=None,
+    help="Only show alerts at this severity.",
+)
+@click.option(
+    "--fan-in-threshold",
+    "fan_in_threshold",
+    type=int,
+    default=DEFAULT_HIGH_FAN_IN_THRESHOLD,
+    show_default=True,
+    help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) -> None:
+    """Check the whole stored graph for NEW_CROSS_TEAM_DEPENDENCY,
+    ORPHANED_SERVICE, UNOWNED_SERVICE, and HIGH_FAN_IN (SPEC.md section 10).
+
+    BREAKING_CHANGE is not implemented -- see depgraph/intelligence/alerts.py
+    for why (it needs signature-level tracking this project doesn't do).
+    """
+    store = GraphStore(db_path)
+    all_services = store.all_services()
+    service_teams = {s["id"]: s["team"] for s in all_services}
+
+    triggered: list = []
+
+    # NEW_CROSS_TEAM_DEPENDENCY: for every distinct repo with at least
+    # two snapshots, diff the two most recent and check the added edges.
+    seen_repos = {s["repo"] for s in all_services if s["repo"]}
+    for repo in seen_repos:
+        recent = store.list_snapshots(repo=repo, limit=2)
+        if len(recent) == 2:
+            old_snapshot = store.get_snapshot(recent[1]["id"])
+            new_snapshot = store.get_snapshot(recent[0]["id"])
+            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+            triggered += check_new_cross_team_dependencies(diff_result["added"], service_teams)
+
+    # The other three are point-in-time checks against every known service.
+    for svc in all_services:
+        downstream = store.edges_for_service(svc["id"], direction="downstream")
+        upstream = store.edges_for_service(svc["id"], direction="upstream")
+        triggered += check_orphaned_service(svc["id"], downstream, upstream)
+        triggered += check_unowned_service(svc["id"], svc["team"])
+        triggered += check_high_fan_in(svc["id"], upstream, threshold=fan_in_threshold)
+
+    store.close()
+
+    if severity_filter:
+        triggered = [a for a in triggered if a.severity == severity_filter]
+
+    if not triggered:
+        click.echo("No alerts.")
+        return
+
+    for alert in triggered:
+        click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
 
 
 if __name__ == "__main__":

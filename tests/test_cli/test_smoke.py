@@ -32,7 +32,7 @@ def test_every_command_help_runs_without_error():
     # depgraph.cli.main is imported, which only happens when a test
     # actually imports this module.
     runner = CliRunner()
-    for command_name in ("scan", "query", "snapshots", "diff"):
+    for command_name in ("scan", "query", "snapshots", "diff", "alerts"):
         result = runner.invoke(cli, [command_name, "--help"])
         assert result.exit_code == 0, f"'{command_name} --help' failed: {result.output}"
 
