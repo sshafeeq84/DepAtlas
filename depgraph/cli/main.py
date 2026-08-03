@@ -17,7 +17,8 @@ import click
 from depgraph.parsers.python_parser import parse_repo as parse_python_repo
 from depgraph.parsers.java_parser import parse_repo as parse_java_repo
 from depgraph.parsers.js_ts_parser import parse_repo as parse_js_ts_repo
-from depgraph.output.json_export import export_edges
+from depgraph.output.json_export import export_edges, export_graph_json
+from depgraph.output.dot_export import export_dot
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
@@ -563,6 +564,49 @@ def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) ->
 
     for alert in triggered:
         click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
+
+
+@cli.command()
+@click.option(
+    "--format",
+    "export_format",
+    type=click.Choice(["json", "dot"]),
+    required=True,
+    help="Output format.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="File to write the export to.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def export(export_format: str, output_path: Path, db_path: Path) -> None:
+    """Export the whole persisted graph as JSON or DOT (SPEC.md section 9).
+
+    Unlike `scan --output`, which writes just that one scan's edges,
+    this exports every service and edge currently in the store, across
+    every repo that's been scanned.
+    """
+    store = GraphStore(db_path)
+    nodes = store.all_services()
+    edges = store.all_edges()
+    store.close()
+
+    if export_format == "json":
+        export_graph_json(nodes, edges, output_path)
+    else:
+        output_path.write_text(export_dot(nodes, edges), encoding="utf-8")
+
+    click.echo(f"Wrote {export_format} export ({len(nodes)} node(s), {len(edges)} edge(s)) to {output_path}")
 
 
 if __name__ == "__main__":

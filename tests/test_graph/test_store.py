@@ -124,3 +124,18 @@ def test_save_snapshot_does_not_replace_previous_snapshots(store):
     store.save_snapshot("/repos/payments", [])
 
     assert len(store.list_snapshots(repo="/repos/payments")) == 3
+
+
+def test_all_edges_returns_every_edge_across_repos(store):
+    store.replace_edges_for_repo(
+        "/repos/payments",
+        [_edge("payments-service", "auth-service", "/repos/payments/charge.py")],
+    )
+    store.replace_edges_for_repo(
+        "/repos/auth", [_edge("auth-service", "billing-service", "/repos/auth/session.py")]
+    )
+
+    all_edges = store.all_edges()
+
+    targets = {e["target_service"] for e in all_edges}
+    assert targets == {"auth-service", "billing-service"}

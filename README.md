@@ -127,6 +127,14 @@ This is an early, in-progress build. What works today:
   - See `tests/test_intelligence/test_alerts.py` for the other four,
     each covered by both a positive and negative case.
 
+- `depgraph export --format json|dot --output <path>` exports the
+  *whole* persisted graph (every service and edge currently in the
+  store, across every repo scanned) — as opposed to `scan --output`,
+  which only writes that one scan's edges. DOT output is
+  Graphviz-compatible (`dot -Tpng graph.dot -o graph.png` if you have
+  Graphviz installed) with services labeled by team where known. See
+  `tests/test_output/`.
+
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
 detection, full TypeScript syntax support, and BREAKING_CHANGE alerting
 (see above for why).
@@ -189,6 +197,10 @@ depgraph scan \
 # or check the whole stored graph on demand:
 depgraph alerts
 depgraph alerts --severity medium
+
+# Export the whole persisted graph:
+depgraph export --format json --output graph.json
+depgraph export --format dot --output graph.dot
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
@@ -207,8 +219,10 @@ being scanned:
 
 The optional `endpoints` key maps a URL host/path pattern to a service
 name, used to resolve `requests.get/post/etc.` call sites found in the
-code. This is a stand-in for the fuller `depgraph.yaml` manifest described
-in `docs/SPEC.md` section 8 — that's one of the next pieces to build.
+code. `depgraph.yaml` (see `--ownership-manifest` above) is the fuller
+manifest described in `docs/SPEC.md` section 8 — this `--services`
+manifest is a narrower, scan-time-only stand-in for module/endpoint
+resolution.
 
 ## Running tests
 
@@ -221,17 +235,28 @@ pytest tests/ -v
 ```
 depgraph/
 ├── depgraph/
-│   ├── cli/            # CLI entry points (click)
-│   ├── parsers/         # Language parsers (ast-based)
-│   ├── graph/           # Data model (DependencyEdge, ServiceNode) — graph builder/store TBD
-│   └── output/          # JSON / DOT exporters
-├── tests/
-│   ├── fixtures/         # Sample repos used by the test suite
-│   └── test_parsers/
+│   ├── cli/            # CLI entry point (click) -- scan, query, snapshots,
+│   │                    diff, alerts, export
+│   ├── connectors/       # GitHub, AWS CodeCommit -- get code onto local disk
+│   ├── parsers/          # Language parsers: python_parser (ast),
+│   │                      java_parser (javalang), js_ts_parser (esprima)
+│   ├── graph/             # DependencyEdge/ServiceNode models, graph builder,
+│   │                        SQLite store (services, edges, snapshots)
+│   ├── ownership/          # CODEOWNERS parser + depgraph.yaml manifest fallback
+│   ├── intelligence/        # Diff engine, alerts
+│   └── output/               # JSON and DOT exporters
+├── tests/                      # Mirrors the structure above, 1:1
 ├── docs/
-│   └── SPEC.md
+│   ├── SPEC.pdf                 # Original v0.1 spec this project follows
+│   └── CONTRIBUTING.md
 └── pyproject.toml
 ```
+
+## Contributing
+
+See `docs/CONTRIBUTING.md` for setup instructions, testing conventions,
+and a list of known, deliberate scope boundaries (things left out on
+purpose, not bugs).
 
 ## License
 
