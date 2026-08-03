@@ -199,5 +199,16 @@ class GraphStore:
         rows = self._conn.execute(query, params).fetchall()
         return [{"id": r[0], "repo": r[1], "created_at": r[2]} for r in rows]
 
+    def all_edges(self) -> list[dict]:
+        """Every edge currently in the live `edges` table, across every
+        repo that's been scanned -- used by `depgraph export`, which
+        exports the whole persisted graph rather than one repo's edges.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM edges ORDER BY source_service, target_service"
+        ).fetchall()
+        columns = [c[0] for c in self._conn.execute("SELECT * FROM edges").description]
+        return [dict(zip(columns, row)) for row in rows]
+
     def close(self) -> None:
         self._conn.close()
