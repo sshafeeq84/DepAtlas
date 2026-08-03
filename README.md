@@ -8,10 +8,10 @@ they cost you a sprint. See `docs/SPEC.md` for the full v1 specification.
 
 This is an early, in-progress build. What works today:
 
-- `depgraph scan --repo <path> ...` or `depgraph scan --github-repo owner/repo ...`
-  (use one or the other) walks a codebase and extracts dependencies
-  using the AST for the chosen `--language` (python/java/javascript,
-  defaults to `python`):
+- `depgraph scan` accepts exactly one of three sources — `--repo <path>`
+  (local directory), `--github-repo owner/repo`, or `--codecommit-repo
+  <name>` — and extracts dependencies using the AST for the chosen
+  `--language` (python/java/javascript, defaults to `python`):
   - **`--repo <path>`**: scans a local directory directly.
   - **`--github-repo owner/repo`**: downloads the repo via the GitHub
     REST API (a zip of the given `--ref`, default the repo's default
@@ -23,6 +23,16 @@ This is an early, in-progress build. What works today:
     dependency on git being installed. See
     `tests/test_connectors/test_github.py` (all network calls are
     mocked — no real GitHub access needed to run the test suite).
+  - **`--codecommit-repo <name>`**: downloads an AWS CodeCommit repo via
+    `boto3`, walking its tree with `get_folder`/`get_file` (CodeCommit
+    has no bulk-download endpoint, unlike GitHub's zipball) and
+    reconstructing it locally under the same cache directory. Uses the
+    AWS profile named in `DEPGRAPH_AWS_PROFILE` (falling back to boto3's
+    default credential chain if unset) — credentials always come from
+    the AWS credentials file, never passed directly. See
+    `tests/test_connectors/test_codecommit.py` (uses a fake,
+    dependency-injected client with canned responses — no real AWS
+    access needed to run the test suite).
   - **Python** (`ast` module): `import` / `from ... import` statements
     (high confidence), and `requests.get/post/put/delete/patch(...)`
     call sites resolved via an `endpoints` registry (medium) or a
@@ -77,8 +87,7 @@ This is an early, in-progress build. What works today:
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
 detection, full TypeScript syntax support, the `depgraph.yaml` manifest
-fallback for ownership, the CodeCommit connector, the diff engine, and
-alerting.
+fallback for ownership, the diff engine, and alerting.
 
 ## Quick start
 
@@ -107,6 +116,14 @@ depgraph scan \
 # (requires DEPGRAPH_GITHUB_TOKEN to be set):
 depgraph scan \
   --github-repo sshafeeq84/Depgraph \
+  --services tests/fixtures/payments_services.json
+
+# Scan a real AWS CodeCommit repo
+# (requires an AWS profile configured; set DEPGRAPH_AWS_PROFILE to use
+# a non-default one):
+depgraph scan \
+  --codecommit-repo my-payments-repo \
+  --region us-east-1 \
   --services tests/fixtures/payments_services.json
 
 # Then query what it found:

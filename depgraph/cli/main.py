@@ -1,10 +1,10 @@
 """DepGraph CLI.
 
 v1 slice so far: `scan` (persists to a local SQLite graph store, with
-optional CODEOWNERS-based team resolution, against either a local
-directory or a GitHub repo) and `query` (reads back from it, by service
-or by team). SPEC.md section 9 has the full planned command surface;
-`diff`, `watch`, `export`, `alerts`, `init` come later.
+optional CODEOWNERS-based team resolution, against a local directory, a
+GitHub repo, or an AWS CodeCommit repo) and `query` (reads back from it,
+by service or by team). SPEC.md section 9 has the full planned command
+surface; `diff`, `watch`, `export`, `alerts`, `init` come later.
 """
 
 from __future__ import annotations
@@ -21,7 +21,12 @@ from depgraph.output.json_export import export_edges
 from depgraph.graph.builder import build_graph
 from depgraph.graph.store import GraphStore
 from depgraph.ownership.codeowners import parse_codeowners
-from depgraph.connectors.github import GitHubConnectorError, fetch_repo, get_token
+from depgraph.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
+from depgraph.connectors.codecommit import (
+    CodeCommitConnectorError,
+    fetch_repo as fetch_codecommit_repo,
+    get_client as get_codecommit_client,
+)
 
 DEFAULT_DB_PATH = Path(".depgraph/graph.db")
 DEFAULT_CACHE_DIR = Path(".depgraph/cache")
@@ -44,7 +49,7 @@ def cli() -> None:
     "repo_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
-    help="Path to a local repo directory to scan. Use this OR --github-repo.",
+    help="Path to a local repo directory to scan. Use this OR --github-repo OR --codecommit-repo.",
 )
 @click.option(
     "--github-repo",
@@ -53,15 +58,32 @@ def cli() -> None:
     help=(
         "A GitHub repo to scan, as 'owner/repo' (e.g. 'sshafeeq84/Depgraph'). "
         "Downloaded via the GitHub API using the token in the "
-        "DEPGRAPH_GITHUB_TOKEN environment variable. Use this OR --repo."
+        "DEPGRAPH_GITHUB_TOKEN environment variable."
     ),
+)
+@click.option(
+    "--codecommit-repo",
+    "codecommit_repo",
+    default=None,
+    help=(
+        "An AWS CodeCommit repo name to scan. Fetched via boto3 using the "
+        "AWS profile named in the DEPGRAPH_AWS_PROFILE environment "
+        "variable (falls back to the default AWS credential chain if unset)."
+    ),
+)
+@click.option(
+    "--region",
+    "region",
+    default="us-east-1",
+    show_default=True,
+    help="AWS region (only used with --codecommit-repo).",
 )
 @click.option(
     "--ref",
     "ref",
     default="HEAD",
     show_default=True,
-    help="Branch, tag, or commit SHA to scan (only used with --github-repo).",
+    help="Branch, tag, or commit SHA to scan (used with --github-repo or --codecommit-repo).",
 )
 @click.option(
     "--cache-dir",
@@ -69,7 +91,7 @@ def cli() -> None:
     type=click.Path(path_type=Path),
     default=DEFAULT_CACHE_DIR,
     show_default=True,
-    help="Where downloaded GitHub repos are extracted (only used with --github-repo).",
+    help="Where downloaded remote repos are extracted (used with --github-repo or --codecommit-repo).",
 )
 @click.option(
     "--services",
@@ -123,6 +145,8 @@ def cli() -> None:
 def scan(
     repo_path: Path | None,
     github_repo: str | None,
+    codecommit_repo: str | None,
+    region: str,
     ref: str,
     cache_dir: Path,
     services_path: Path,
@@ -131,11 +155,12 @@ def scan(
     output_path: Path | None,
     db_path: Path,
 ) -> None:
-    """Scan a repo (local or GitHub), persist the results, and print the edges found."""
-    if not repo_path and not github_repo:
-        raise click.UsageError("Provide either --repo or --github-repo.")
-    if repo_path and github_repo:
-        raise click.UsageError("Provide only one of --repo or --github-repo, not both.")
+    """Scan a repo (local, GitHub, or CodeCommit), persist the results, and print the edges found."""
+    sources_given = [s for s in (repo_path, github_repo, codecommit_repo) if s]
+    if len(sources_given) == 0:
+        raise click.UsageError("Provide one of --repo, --github-repo, or --codecommit-repo.")
+    if len(sources_given) > 1:
+        raise click.UsageError("Provide only one of --repo, --github-repo, or --codecommit-repo.")
 
     if github_repo:
         if "/" not in github_repo:
@@ -144,8 +169,17 @@ def scan(
         try:
             token = get_token()
             click.echo(f"Downloading {github_repo}@{ref} from GitHub...", err=True)
-            repo_path = fetch_repo(owner, repo_name, token, cache_dir, ref)
+            repo_path = fetch_github_repo(owner, repo_name, token, cache_dir, ref)
         except GitHubConnectorError as exc:
+            raise click.ClickException(str(exc))
+
+    if codecommit_repo:
+        try:
+            client = get_codecommit_client(region)
+            click.echo(f"Downloading {codecommit_repo} from AWS CodeCommit ({region})...", err=True)
+            commit_specifier = ref if ref != "HEAD" else ""
+            repo_path = fetch_codecommit_repo(codecommit_repo, client, cache_dir, commit_specifier)
+        except CodeCommitConnectorError as exc:
             raise click.ClickException(str(exc))
 
     manifest = json.loads(services_path.read_text(encoding="utf-8"))
