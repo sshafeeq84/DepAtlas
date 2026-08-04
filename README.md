@@ -15,6 +15,14 @@ queryable graph, automatically.
 
 Full original design in [`docs/SPEC.pdf`](docs/SPEC.pdf).
 
+<p align="center">
+  <img src="docs/images/example_dependency_graph.png" alt="Example dependency graph exported by depgraph, showing five services colored by owning team, generated with depgraph export --format dot" width="850">
+</p>
+
+<p align="center">
+  <img src="docs/images/example_alerts_terminal.png" alt="Terminal output showing depgraph detecting a new cross-team dependency" width="850">
+</p>
+
 ## Status
 
 Feature-complete relative to the v1 spec. Three language parsers, three
