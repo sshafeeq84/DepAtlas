@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    edges_json TEXT NOT NULL
+    edges_json TEXT NOT NULL,
+    signatures_json TEXT NOT NULL DEFAULT '[]'
 );
 """
 
@@ -71,7 +72,23 @@ class GraphStore:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Lightweight, idempotent schema migrations for databases created
+        before a given column existed. `CREATE TABLE IF NOT EXISTS` in
+        SCHEMA only helps brand-new databases -- an existing one needs an
+        explicit ALTER TABLE, so people don't have to manually delete
+        their local graph.db every time the schema grows.
+        """
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(snapshots)").fetchall()
+        }
+        if "signatures_json" not in existing_columns:
+            self._conn.execute(
+                "ALTER TABLE snapshots ADD COLUMN signatures_json TEXT NOT NULL DEFAULT '[]'"
+            )
 
     def upsert_services(self, nodes: list[ServiceNode]) -> None:
         for node in nodes:
@@ -149,27 +166,36 @@ class GraphStore:
         columns = [c[0] for c in self._conn.execute("SELECT * FROM edges").description]
         return [dict(zip(columns, row)) for row in rows]
 
-    def save_snapshot(self, repo: str, edges: list[DependencyEdge]) -> int:
-        """Persist a new snapshot of this repo's edge set and return its
-        auto-generated snapshot id. Called once per `scan`, in addition
-        to (not instead of) updating the `edges` table -- this is what
-        gives the diff engine a timeline to compare against.
+    def save_snapshot(
+        self,
+        repo: str,
+        edges: list[DependencyEdge],
+        signatures: list | None = None,
+    ) -> int:
+        """Persist a new snapshot of this repo's edge set (and, optionally,
+        its public signature set) and return its auto-generated snapshot
+        id. Called once per `scan`, in addition to (not instead of)
+        updating the `edges` table -- this is what gives the diff engine
+        (and BREAKING_CHANGE alerting) a timeline to compare against.
+        `signatures` defaults to an empty list for callers that don't
+        pass any (e.g. existing tests written before signatures existed).
         """
         edges_json = json.dumps([e.to_dict() for e in edges])
+        signatures_json = json.dumps([s.to_dict() for s in (signatures or [])])
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = self._conn.execute(
-            "INSERT INTO snapshots (repo, created_at, edges_json) VALUES (?, ?, ?)",
-            (repo, created_at, edges_json),
+            "INSERT INTO snapshots (repo, created_at, edges_json, signatures_json) VALUES (?, ?, ?, ?)",
+            (repo, created_at, edges_json, signatures_json),
         )
         self._conn.commit()
         return cursor.lastrowid
 
     def get_snapshot(self, snapshot_id: int) -> dict | None:
-        """Return {"id", "repo", "created_at", "edges"} for a snapshot,
-        or None if no snapshot with that id exists.
+        """Return {"id", "repo", "created_at", "edges", "signatures"} for
+        a snapshot, or None if no snapshot with that id exists.
         """
         row = self._conn.execute(
-            "SELECT id, repo, created_at, edges_json FROM snapshots WHERE id = ?",
+            "SELECT id, repo, created_at, edges_json, signatures_json FROM snapshots WHERE id = ?",
             (snapshot_id,),
         ).fetchone()
         if row is None:
@@ -179,6 +205,7 @@ class GraphStore:
             "repo": row[1],
             "created_at": row[2],
             "edges": json.loads(row[3]),
+            "signatures": json.loads(row[4]),
         }
 
     def list_snapshots(self, repo: str | None = None, limit: int | None = None) -> list[dict]:

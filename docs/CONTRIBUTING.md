@@ -73,11 +73,6 @@ relevant module's docstring and in the README:
   skipped with a warning, not crashed on. Full support would need a
   Node-based parser (`@babel/parser` or the TS compiler API), which
   this project avoids as a runtime dependency for now.
-- **`BREAKING_CHANGE` alerting** — SPEC.md's highest-severity alert
-  needs tracking function/method signatures across scans, which is a
-  different kind of analysis than the dependency-edge model this
-  project currently builds. Not implemented yet; see
-  `depgraph/intelligence/alerts.py`.
 - **`boto3`/`grpc` detection in the Python parser**, and Java's
   Maven/Gradle shared-library detection — spec'd, not yet built.
 

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import javalang
 
-from depgraph.graph.models import DependencyEdge
+from depgraph.graph.models import DependencyEdge, PublicSignature
 
 # Common Spring RestTemplate / WebClient / generic HTTP-client method
 # names. This is intentionally a flat method-name allowlist rather than
@@ -188,3 +188,35 @@ def parse_repo(
     for java_file in repo_path.rglob("*.java"):
         edges.extend(parse_file(java_file, known_services, known_endpoints))
     return edges
+
+
+def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
+    """Extract every public method signature across a repo's .java
+    files -- the data BREAKING_CHANGE alerting compares between scans
+    (SPEC.md section 10). "Public" here means javalang reports `public`
+    in the method's modifier set; unlike the Python parser's
+    underscore-prefix convention, Java has an explicit access modifier
+    to check instead of a naming convention. Unlike Python/JS, Java
+    always has a real static type for every parameter, so `type` here
+    is never None.
+    """
+    signatures: list[PublicSignature] = []
+    for java_file in repo_path.rglob("*.java"):
+        source = java_file.read_text(encoding="utf-8")
+        tree = javalang.parse.parse(source)
+
+        for _path, method in tree.filter(javalang.tree.MethodDeclaration):
+            if "public" not in method.modifiers:
+                continue
+
+            signatures.append(
+                PublicSignature(
+                    service=self_service,
+                    name=method.name,
+                    params=[{"name": p.name, "type": p.type.name} for p in method.parameters],
+                    source_file=str(java_file),
+                    source_line=method.position.line if method.position else 0,
+                )
+            )
+
+    return signatures

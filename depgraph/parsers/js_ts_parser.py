@@ -38,7 +38,7 @@ from pathlib import Path
 import esprima
 from esprima.nodes import Node
 
-from depgraph.graph.models import DependencyEdge
+from depgraph.graph.models import DependencyEdge, PublicSignature
 
 HTTP_CLIENT_OBJECTS = {"axios", "got"}
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -265,3 +265,69 @@ def parse_repo(
         edges.extend(parse_package_json(package_json, known_services))
 
     return edges
+
+
+def _extract_signatures_from_file(file_path: Path, self_service: str) -> list[PublicSignature]:
+    """A module's public interface, in JS/TS terms, is what it exports --
+    so this looks specifically for `export function foo(...)` and
+    `export default function foo(...)`, not every function in the file
+    (an unexported function is a private implementation detail, same
+    idea as the Python parser's underscore-prefix convention).
+
+    Same TypeScript-syntax limitation as parse_file: a file esprima
+    can't parse is skipped (already warned about during the edge-parsing
+    pass, so no need to warn twice here).
+    """
+    source = file_path.read_text(encoding="utf-8")
+    try:
+        tree = esprima.parseModule(source, options={"loc": True, "tolerant": True})
+    except Exception:
+        return []
+
+    signatures: list[PublicSignature] = []
+
+    for node in tree.body:
+        node_type = getattr(node, "type", None)
+        declaration = None
+        if node_type == "ExportNamedDeclaration":
+            declaration = node.declaration
+        elif node_type == "ExportDefaultDeclaration":
+            declaration = node.declaration
+
+        if declaration is None or getattr(declaration, "type", None) != "FunctionDeclaration":
+            continue
+        if declaration.id is None:  # anonymous `export default function (...) {}`
+            continue
+
+        signatures.append(
+            PublicSignature(
+                service=self_service,
+                name=declaration.id.name,
+                # type is always None here: esprima parses JavaScript,
+                # not TypeScript's type annotations (same documented
+                # limitation as parse_file above), so there's no type
+                # information to capture even for .ts files that do
+                # have real annotations in source.
+                params=[
+                    {"name": p.name, "type": None}
+                    for p in declaration.params
+                    if getattr(p, "type", None) == "Identifier"
+                ],
+                source_file=str(file_path),
+                source_line=node.loc.start.line if node.loc else 0,
+            )
+        )
+
+    return signatures
+
+
+def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
+    """Extract every exported function signature across a repo's
+    .js/.jsx/.ts/.tsx files -- the data BREAKING_CHANGE alerting compares
+    between scans (SPEC.md section 10).
+    """
+    signatures: list[PublicSignature] = []
+    for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
+        for source_file in repo_path.rglob(pattern):
+            signatures.extend(_extract_signatures_from_file(source_file, self_service))
+    return signatures

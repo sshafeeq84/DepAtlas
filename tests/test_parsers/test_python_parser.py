@@ -70,3 +70,75 @@ def test_http_call_with_no_matching_service_is_skipped():
     # http_call edges, not more.
     http_edges = [e for e in edges if e.type == "http_call"]
     assert len(http_edges) == 2
+
+
+# --- extract_signatures ---
+
+
+def test_extract_signatures_finds_module_level_and_method_signatures(tmp_path):
+    from depgraph.parsers.python_parser import extract_signatures
+
+    (tmp_path / "service.py").write_text(
+        "def public_func(a, b):\n"
+        "    return a + b\n"
+        "\n"
+        "class Handler:\n"
+        "    def public_method(self, req):\n"
+        "        return req\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+    names = {s.name for s in signatures}
+
+    assert names == {"public_func", "public_method"}
+    public_func = next(s for s in signatures if s.name == "public_func")
+    assert public_func.params == [{"name": "a", "type": None}, {"name": "b", "type": None}]
+    assert public_func.service == "payments-service"
+
+
+def test_extract_signatures_excludes_underscore_prefixed_functions(tmp_path):
+    from depgraph.parsers.python_parser import extract_signatures
+
+    (tmp_path / "service.py").write_text("def _private_func(x):\n    return x\n")
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert signatures == []
+
+
+def test_extract_signatures_excludes_nested_functions(tmp_path):
+    from depgraph.parsers.python_parser import extract_signatures
+
+    (tmp_path / "service.py").write_text(
+        "def outer():\n" "    def inner_helper():\n" "        return 1\n" "    return inner_helper()\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+    names = {s.name for s in signatures}
+
+    assert names == {"outer"}
+
+
+def test_extract_signatures_captures_type_annotations(tmp_path):
+    from depgraph.parsers.python_parser import extract_signatures
+
+    (tmp_path / "service.py").write_text(
+        "def create_charge(amount: int, currency: str) -> bool:\n" "    return True\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert signatures[0].params == [
+        {"name": "amount", "type": "int"},
+        {"name": "currency", "type": "str"},
+    ]
+
+
+def test_extract_signatures_untyped_params_get_none_type(tmp_path):
+    from depgraph.parsers.python_parser import extract_signatures
+
+    (tmp_path / "service.py").write_text("def create_charge(amount):\n" "    return True\n")
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert signatures[0].params == [{"name": "amount", "type": None}]
