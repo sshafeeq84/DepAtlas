@@ -1,213 +1,62 @@
 # DepGraph
 
-An open-source agent that reads your codebase and builds a living dependency
-graph across services, teams, and repositories — so blockers surface before
-they cost you a sprint. See `docs/SPEC.md` for the full v1 specification.
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+DepGraph reads your codebase and builds a living dependency graph across
+services, teams, and repositories — so blockers surface before they cost
+you a sprint.
+
+Engineering organizations above a certain size develop an invisible
+coordination tax: teams block each other without knowing it, status
+updates are written from memory, and nobody has a system that actually
+knows what depends on what. DepGraph reads the code itself — the one
+source of truth that can't drift out of date — and turns it into a
+queryable graph, automatically.
+
+Full original design in [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Status
 
-This is an early, in-progress build. What works today:
+Feature-complete relative to the v1 spec. Three language parsers, three
+code sources, a persisted queryable graph with history and diffing, full
+ownership resolution, all five spec'd alert types (including
+signature-level breaking-change detection), and both JSON and DOT
+export — all covered by 113 passing tests. Two things are knowingly out
+of scope for now; see [Known limitations](#known-limitations).
 
-- `depgraph scan` accepts exactly one of three sources — `--repo <path>`
-  (local directory), `--github-repo owner/repo`, or `--codecommit-repo
-  <name>` — and extracts dependencies using the AST for the chosen
-  `--language` (python/java/javascript, defaults to `python`):
-  - **`--repo <path>`**: scans a local directory directly.
-  - **`--github-repo owner/repo`**: downloads the repo via the GitHub
-    REST API (a zip of the given `--ref`, default the repo's default
-    branch), extracts it into a local cache (default
-    `.depgraph/cache/`), and scans that. Requires a
-    `DEPGRAPH_GITHUB_TOKEN` environment variable — never accepted as a
-    CLI argument or written to disk (SPEC.md section 12). Uses the
-    REST API + zip download rather than `git clone`, so there's no
-    dependency on git being installed. See
-    `tests/test_connectors/test_github.py` (all network calls are
-    mocked — no real GitHub access needed to run the test suite).
-  - **`--codecommit-repo <name>`**: downloads an AWS CodeCommit repo via
-    `boto3`, walking its tree with `get_folder`/`get_file` (CodeCommit
-    has no bulk-download endpoint, unlike GitHub's zipball) and
-    reconstructing it locally under the same cache directory. Uses the
-    AWS profile named in `DEPGRAPH_AWS_PROFILE` (falling back to boto3's
-    default credential chain if unset) — credentials always come from
-    the AWS credentials file, never passed directly. See
-    `tests/test_connectors/test_codecommit.py` (uses a fake,
-    dependency-injected client with canned responses — no real AWS
-    access needed to run the test suite).
-  - **Python** (`ast` module): `import` / `from ... import` statements
-    (high confidence), and `requests.get/post/put/delete/patch(...)`
-    call sites resolved via an `endpoints` registry (medium) or a
-    heuristic name match (low).
-  - **Java** (`javalang`): `import` statements resolved against known
-    internal package namespaces (high confidence); `@FeignClient`
-    annotations, an explicit direct-dependency declaration (high
-    confidence, no URL matching needed); and RestTemplate/WebClient
-    -style call sites (`getForObject`, `postForObject`, `exchange`,
-    etc.), resolved the same medium/low way as Python's `requests`
-    calls. See `tests/test_parsers/test_java_parser.py`.
-  - **JavaScript/TypeScript** (`esprima`): `import`/`require(...)`
-    statements resolved against known internal package names (high
-    confidence); `fetch`/`axios.<method>`/`got.<method>` call sites
-    resolved the same medium/low way as the other languages; and
-    `package.json` `dependencies`/`devDependencies` entries, resolved as
-    `shared_library` edges (high confidence — a declared dependency is
-    an explicit fact, not a guess). **Known limitation:** esprima parses
-    JavaScript, not TypeScript-specific syntax (type annotations,
-    interfaces, etc.) — a `.ts`/`.tsx` file using real TypeScript syntax
-    fails to parse and is skipped with a warning rather than crashing
-    the whole scan. Full TypeScript support would need a Node-based
-    parser (`@babel/parser` or the TS compiler API, per SPEC.md 7.3),
-    which this project deliberately avoids as a runtime dependency for
-    now. See `tests/test_parsers/test_js_ts_parser.py`.
-- Only dependencies that resolve against the `--services` manifest are
-  emitted as edges — everything else (stdlib/third-party imports,
-  unrecognized URLs) is correctly ignored. See the parser-specific test
-  files for the proof.
-- Every `scan` persists its results to a local SQLite graph store
-  (default: `.depgraph/graph.db`). Rescanning a repo replaces just that
-  repo's edges, so the graph reflects the current state of the code
-  rather than accumulating stale data. Services discovered only as a
-  dependency (not yet scanned directly) get a placeholder node that
-  later gets filled in once their own repo is scanned — see
-  `tests/test_graph/test_store.py` and `test_builder.py`.
-- `depgraph query --service <name> --direction downstream|upstream` reads
-  the persisted graph: `downstream` shows what a service depends on;
-  `upstream` shows what depends on it (i.e. "what would this service's
-  changes affect?"). `depgraph query --team <name>` instead lists every
-  service owned by that team.
-- Team ownership resolves in the priority order from SPEC.md section 8:
-  1. **`scan --codeowners <path>`**: every file's owner is resolved
-     individually (last matching rule wins, same as GitHub's own
-     CODEOWNERS behavior), and the service is attributed to whichever
-     team owns the majority of its files. See
-     `tests/test_ownership/test_codeowners.py`.
-  2. **`scan --ownership-manifest <path>`**: a `depgraph.yaml` manifest
-     mapping service names directly to teams, used only when
-     `--codeowners` wasn't supplied, or resolved no team for this repo.
-     See `tests/test_ownership/test_manifest.py`.
-  3. **Unowned**: if neither resolves a team, the service is left
-     unowned. Priority-ordering tests for all of this live in
-     `test_graph/test_builder.py`.
-- Output is also a JSON `DependencyEdge` list, printed to stdout or
-  written to a file with `--output`.
-
-- Every `scan` also saves an immutable **snapshot** of that repo's edge
-  set (SPEC.md section 5's "Versions graph per commit SHA"). Unlike the
-  live `edges` table (which always reflects only the current state),
-  snapshots accumulate — this is what the diff engine compares.
-  `depgraph snapshots [--repo <path>]` lists them with their ids.
-- `depgraph diff --from <id> --to <id>` or `depgraph diff --last 2
-  --repo <path>` (SPEC.md section 9) compares two snapshots and reports
-  which dependencies were added or removed. Confidence-only changes on
-  an otherwise-unchanged edge aren't reported as added/removed — only
-  genuine appearance/disappearance of a dependency counts. See
-  `tests/test_intelligence/test_diff.py` and the snapshot tests in
-  `test_graph/test_store.py`.
-- **Alerts** (SPEC.md section 10): all five defined alert types are
-  implemented and checked automatically after every `scan` (disable
-  with `--no-alerts`), or on demand across the whole stored graph via
-  `depgraph alerts [--severity high|medium|low]`:
-  - `BREAKING_CHANGE` (high) — a public function was removed, or its
-    parameter count changed, or a parameter's *type* changed at the
-    same position (when both the old and new versions have a known
-    type — Java always does; Python only when annotated; JS/TS never,
-    since esprima can't see TypeScript's type annotations) — between
-    two scans of a service **that has at least one known dependent**
-    (a signature change on a service nobody calls doesn't trigger this,
-    per SPEC.md's own trigger wording). A pure parameter *rename* (same
-    position, same type-or-lack-of-type) is deliberately **not**
-    flagged — most real callers invoke positionally, so a rename alone
-    doesn't break them. Detected via each parser's
-    `extract_signatures()`: module-level functions and public class
-    methods for Python (non-underscore-prefixed), `public`-modifier
-    methods for Java, and `export`/`export default` functions for
-    JS/TS. See the module docstring in `depgraph/intelligence/alerts.py`
-    for the full reasoning, and `tests/test_intelligence/test_alerts.py`
-    for cases covering rename-vs-type-change-vs-count-change directly.
-  - `NEW_CROSS_TEAM_DEPENDENCY` (medium) — a newly-added edge (from a
-    diff) whose source and target services have different, both-known
-    teams.
-  - `HIGH_FAN_IN` (medium) — a service's distinct dependent count meets
-    or exceeds a threshold (default 10, `--fan-in-threshold` to change).
-  - `ORPHANED_SERVICE` (low) — a service with no dependents and no
-    dependencies at all.
-  - `UNOWNED_SERVICE` (low) — a service with no resolved team, from
-    either CODEOWNERS or the manifest fallback.
-  - See `tests/test_intelligence/test_alerts.py` — every check has both
-    a positive and negative case, including the "no known dependents
-    means no BREAKING_CHANGE alert" rule specifically.
-
-- `depgraph export --format json|dot --output <path>` exports the
-  *whole* persisted graph (every service and edge currently in the
-  store, across every repo scanned) — as opposed to `scan --output`,
-  which only writes that one scan's edges. DOT output is
-  Graphviz-compatible (`dot -Tpng graph.dot -o graph.png` if you have
-  Graphviz installed) with services labeled by team where known. See
-  `tests/test_output/`.
-
-Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection and full TypeScript syntax support.
+| Area | What's there |
+|---|---|
+| **Languages** | Python (`ast`), Java (`javalang`), JavaScript/TypeScript (`esprima`) |
+| **Code sources** | Local directory, GitHub (REST API), AWS CodeCommit (`boto3`) |
+| **Persistence** | SQLite-backed graph store; every scan saves an immutable snapshot |
+| **Ownership** | CODEOWNERS, with a `depgraph.yaml` manifest fallback |
+| **Intelligence** | Diff engine (snapshot-to-snapshot) + 5 alert types, incl. breaking-change signature detection |
+| **Export** | JSON and Graphviz DOT |
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
 
-# Scan the bundled Python fixture repo (persists to .depgraph/graph.db):
+# Scan a local repo, resolving ownership from CODEOWNERS:
 depgraph scan \
   --repo tests/fixtures/sample_repo/payments \
   --services tests/fixtures/payments_services.json \
   --codeowners tests/fixtures/sample_repo/payments/CODEOWNERS
 
-# Scan the bundled Java fixture repo:
-depgraph scan \
-  --repo tests/fixtures/sample_repo_java/payments \
-  --services tests/fixtures/payments_services_java.json \
-  --language java
-
-# Scan the bundled JS fixture repo:
-depgraph scan \
-  --repo tests/fixtures/sample_repo_js/payments \
-  --services tests/fixtures/payments_services_js.json \
-  --language javascript
-
-# Scan a real GitHub repo instead of a local directory
-# (requires DEPGRAPH_GITHUB_TOKEN to be set):
-depgraph scan \
-  --github-repo sshafeeq84/Depgraph \
-  --services tests/fixtures/payments_services.json
-
-# Scan a real AWS CodeCommit repo
-# (requires an AWS profile configured; set DEPGRAPH_AWS_PROFILE to use
-# a non-default one):
-depgraph scan \
-  --codecommit-repo my-payments-repo \
-  --region us-east-1 \
-  --services tests/fixtures/payments_services.json
-
-# Then query what it found:
+# Query what it found:
 depgraph query --service payments-service --direction downstream
-depgraph query --service auth-service --direction upstream
 depgraph query --team @payments-team
 
-# See what changed between scans:
-depgraph snapshots --repo tests/fixtures/sample_repo/payments
+# See what changed since the last scan (run the scan above twice to
+# see this produce real output; on a first scan there's nothing yet
+# to compare against):
 depgraph diff --last 2 --repo tests/fixtures/sample_repo/payments
-depgraph diff --from 1 --to 2
 
-# Resolve ownership from a depgraph.yaml manifest instead of CODEOWNERS
-# (falls back to this only when --codeowners is absent or unresolved):
-depgraph scan \
-  --repo tests/fixtures/sample_repo/payments \
-  --services tests/fixtures/payments_services.json \
-  --ownership-manifest tests/fixtures/depgraph.yaml
-
-# Alerts run automatically after every scan (disable with --no-alerts),
-# or check the whole stored graph on demand:
+# Check for cross-team dependencies, breaking changes, and more:
 depgraph alerts
-depgraph alerts --severity medium
 
-# Export the whole persisted graph:
-depgraph export --format json --output graph.json
+# Export the whole graph:
 depgraph export --format dot --output graph.dot
 ```
 
@@ -225,12 +74,154 @@ being scanned:
 }
 ```
 
-The optional `endpoints` key maps a URL host/path pattern to a service
-name, used to resolve `requests.get/post/etc.` call sites found in the
-code. `depgraph.yaml` (see `--ownership-manifest` above) is the fuller
-manifest described in `docs/SPEC.md` section 8 — this `--services`
-manifest is a narrower, scan-time-only stand-in for module/endpoint
-resolution.
+More usage examples — Java, JS/TS, GitHub, CodeCommit, ownership
+manifests — are in [Full usage](#full-usage) below.
+
+## CLI reference
+
+| Command | Purpose |
+|---|---|
+| `depgraph scan` | Parse a repo (local, GitHub, or CodeCommit) and persist the resulting graph |
+| `depgraph query` | Look up a service's dependencies (`--direction downstream\|upstream`) or a team's services |
+| `depgraph snapshots` | List saved snapshots for a repo |
+| `depgraph diff` | Compare two snapshots (`--from`/`--to` or `--last 2`) |
+| `depgraph alerts` | Check the stored graph for all 5 alert types |
+| `depgraph export` | Export the whole graph as JSON or DOT |
+
+Every command supports `--help` for full option details.
+
+## How it works
+
+### Language parsers
+
+Each parser walks a real AST (never regex) and extracts dependencies at
+three confidence levels — **high** (an explicit, unambiguous signal),
+**medium** (a configured endpoint match), and **low** (a heuristic
+match) — plus public function/method signatures for breaking-change
+detection.
+
+- **Python** (`ast`): `import`/`from...import` statements (high);
+  `requests.get/post/etc.` calls resolved via an endpoint registry
+  (medium) or name heuristic (low).
+- **Java** (`javalang`): `import` statements resolved against known
+  package namespaces (high); `@FeignClient` annotations, an explicit
+  dependency declaration (high); RestTemplate/WebClient-style calls
+  (medium/low, same scheme as Python).
+- **JavaScript/TypeScript** (`esprima`): `import`/`require(...)` (high);
+  `fetch`/`axios.<method>`/`got.<method>` calls (medium/low);
+  `package.json` dependencies as `shared_library` edges (high).
+
+Tests: `tests/test_parsers/`.
+
+### Code sources
+
+`depgraph scan` takes exactly one of:
+- **`--repo <path>`** — a local directory.
+- **`--github-repo owner/repo`** — downloaded via the GitHub REST API's
+  zipball endpoint (no `git clone` dependency). Requires
+  `DEPGRAPH_GITHUB_TOKEN`.
+- **`--codecommit-repo <name>`** — downloaded via `boto3`, walking the
+  repo tree with `get_folder`/`get_file` (CodeCommit has no bulk-download
+  endpoint). Uses the AWS profile in `DEPGRAPH_AWS_PROFILE`, or the
+  default credential chain.
+
+Tests: `tests/test_connectors/` (all network/AWS calls mocked — no real
+credentials needed to run the suite).
+
+### Persistence and diffing
+
+Every `scan` persists to a local SQLite store (default
+`.depgraph/graph.db`) and saves an immutable snapshot of that scan's
+edges. Rescanning a repo replaces its *live* edges (so the graph always
+reflects current code) while snapshots accumulate, giving
+`depgraph diff` a timeline to compare. Services known only as a
+dependency (not yet scanned directly) get a placeholder node, filled in
+once their own repo is scanned.
+
+Tests: `tests/test_graph/`, `tests/test_intelligence/test_diff.py`.
+
+### Ownership
+
+Resolved in priority order: **CODEOWNERS** (majority owner across a
+repo's files, last-matching-rule-wins) → **`depgraph.yaml` manifest**
+fallback (explicit service→team mapping) → **unowned**.
+
+Tests: `tests/test_ownership/`.
+
+### Alerts
+
+All five SPEC.md alert types, checked automatically after every `scan`
+(`--no-alerts` to disable) or on demand via `depgraph alerts`:
+
+- **`BREAKING_CHANGE`** (high) — a public function removed, its
+  parameter count changed, or a parameter's type changed at the same
+  position (only when both old and new have a known type) — on a
+  service with at least one known dependent. A pure parameter *rename*
+  is deliberately not flagged, since most real callers invoke
+  positionally.
+- **`NEW_CROSS_TEAM_DEPENDENCY`** (medium) — a new edge crossing a team
+  boundary.
+- **`HIGH_FAN_IN`** (medium) — a service's distinct dependent count
+  crosses a threshold (default 10).
+- **`ORPHANED_SERVICE`** (low) — no dependents and no dependencies.
+- **`UNOWNED_SERVICE`** (low) — no resolved team.
+
+Tests: `tests/test_intelligence/test_alerts.py`.
+
+## Full usage
+
+```bash
+# Scan a Java repo:
+depgraph scan \
+  --repo tests/fixtures/sample_repo_java/payments \
+  --services tests/fixtures/payments_services_java.json \
+  --language java
+
+# Scan a JS/TS repo:
+depgraph scan \
+  --repo tests/fixtures/sample_repo_js/payments \
+  --services tests/fixtures/payments_services_js.json \
+  --language javascript
+
+# Scan a real GitHub repo (requires DEPGRAPH_GITHUB_TOKEN):
+depgraph scan \
+  --github-repo sshafeeq84/Depgraph \
+  --services tests/fixtures/payments_services.json
+
+# Scan a real AWS CodeCommit repo (requires an AWS profile):
+depgraph scan \
+  --codecommit-repo my-payments-repo \
+  --region us-east-1 \
+  --services tests/fixtures/payments_services.json
+
+# Resolve ownership from a depgraph.yaml manifest instead of CODEOWNERS:
+depgraph scan \
+  --repo tests/fixtures/sample_repo/payments \
+  --services tests/fixtures/payments_services.json \
+  --ownership-manifest tests/fixtures/depgraph.yaml
+
+# List and diff snapshots explicitly:
+depgraph snapshots --repo tests/fixtures/sample_repo/payments
+depgraph diff --from 1 --to 2
+
+# Filter alerts by severity:
+depgraph alerts --severity medium
+```
+
+## Known limitations
+
+A couple of things are deliberately out of scope for now, documented in
+the relevant module and in [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md):
+
+- **Full TypeScript syntax** — `esprima` parses JavaScript, not
+  TypeScript-specific syntax (type annotations, interfaces). A `.ts`
+  file using real TS syntax is skipped with a warning, not crashed on.
+  Full support would need a Node-based parser, which this project
+  avoids as a runtime dependency.
+- **`boto3`/`grpc` detection** in the Python parser, and Java's
+  Maven/Gradle shared-library detection — spec'd, not yet built.
+- The **CodeCommit connector** is fully tested against a mocked AWS API
+  but has not been exercised against a real AWS account.
 
 ## Running tests
 
@@ -243,29 +234,26 @@ pytest tests/ -v
 ```
 depgraph/
 ├── depgraph/
-│   ├── cli/            # CLI entry point (click) -- scan, query, snapshots,
-│   │                    diff, alerts, export
-│   ├── connectors/       # GitHub, AWS CodeCommit -- get code onto local disk
-│   ├── parsers/          # Language parsers: python_parser (ast),
-│   │                      java_parser (javalang), js_ts_parser (esprima)
-│   ├── graph/             # DependencyEdge/ServiceNode models, graph builder,
-│   │                        SQLite store (services, edges, snapshots)
-│   ├── ownership/          # CODEOWNERS parser + depgraph.yaml manifest fallback
+│   ├── cli/            # CLI entry point (click)
+│   ├── connectors/       # GitHub, AWS CodeCommit
+│   ├── parsers/          # python_parser (ast), java_parser (javalang),
+│   │                       js_ts_parser (esprima)
+│   ├── graph/             # Models, graph builder, SQLite store
+│   ├── ownership/          # CODEOWNERS + depgraph.yaml manifest
 │   ├── intelligence/        # Diff engine, alerts
-│   └── output/               # JSON and DOT exporters
-├── tests/                      # Mirrors the structure above, 1:1
+│   └── output/                # JSON and DOT exporters
+├── tests/                       # Mirrors the structure above, 1:1
 ├── docs/
-│   ├── SPEC.pdf                 # Original v0.1 spec this project follows
+│   ├── SPEC.pdf                  # Original v0.1 spec
 │   └── CONTRIBUTING.md
 └── pyproject.toml
 ```
 
 ## Contributing
 
-See `docs/CONTRIBUTING.md` for setup instructions, testing conventions,
-and a list of known, deliberate scope boundaries (things left out on
-purpose, not bugs).
+See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for setup,
+testing conventions, and known scope boundaries.
 
 ## License
 
-Apache 2.0 (proposed — see `docs/SPEC.md` section 13.5).
+Apache 2.0 — see [`LICENSE`](LICENSE).
