@@ -13,7 +13,7 @@ knows what depends on what. DepGraph reads the code itself — the one
 source of truth that can't drift out of date — and turns it into a
 queryable graph, automatically.
 
-Full original design in [`docs/SPEC.md`](docs/SPEC.md).
+Full original design in [`docs/SPEC.pdf`](docs/SPEC.pdf).
 
 ## Status
 
