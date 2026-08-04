@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from depgraph.graph.models import DependencyEdge
+from depgraph.graph.models import DependencyEdge, PublicSignature
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
@@ -219,3 +219,72 @@ def parse_repo(
     for py_file in repo_path.rglob("*.py"):
         edges.extend(parse_file(py_file, known_services, known_endpoints))
     return edges
+
+
+def _param_info(arg: ast.arg) -> dict:
+    """Render one function parameter as {"name", "type"}. `type` is the
+    unparsed annotation expression (e.g. "int", "Optional[str]") if the
+    parameter is annotated, else None -- most real-world Python code
+    mixes annotated and unannotated functions, so this has to degrade
+    gracefully rather than requiring full type coverage.
+    """
+    type_str = ast.unparse(arg.annotation) if arg.annotation is not None else None
+    return {"name": arg.arg, "type": type_str}
+
+
+def _collect_public_functions(node: ast.AST, results: list[dict]) -> None:
+    """Collect public (non-underscore-prefixed) functions defined directly
+    at module level or as class methods -- not nested inside another
+    function, since a closure/helper defined inside a function body isn't
+    part of the module's or class's public interface.
+
+    Deliberately does not descend into function bodies (so a nested
+    `def` inside another function is skipped entirely), but does descend
+    into class bodies (so public methods are collected the same as
+    module-level functions).
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not child.name.startswith("_"):
+                results.append(
+                    {
+                        "name": child.name,
+                        "params": [_param_info(a) for a in child.args.args],
+                        "line": child.lineno,
+                    }
+                )
+            # Do not descend into the function body -- anything defined
+            # inside it is a private implementation detail, not part of
+            # the public interface.
+        elif isinstance(child, ast.ClassDef):
+            _collect_public_functions(child, results)
+        # Other node types (If, For, etc.) aren't descended into either
+        # -- we only care about what's directly reachable at module or
+        # class scope.
+
+
+def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
+    """Extract every public function/method signature across a repo's
+    .py files -- the data BREAKING_CHANGE alerting compares between
+    scans (SPEC.md section 10).
+    """
+    signatures: list[PublicSignature] = []
+    for py_file in repo_path.rglob("*.py"):
+        source = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(py_file))
+
+        results: list[dict] = []
+        _collect_public_functions(tree, results)
+
+        for r in results:
+            signatures.append(
+                PublicSignature(
+                    service=self_service,
+                    name=r["name"],
+                    params=r["params"],
+                    source_file=str(py_file),
+                    source_line=r["line"],
+                )
+            )
+
+    return signatures

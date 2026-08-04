@@ -1,4 +1,5 @@
 from depgraph.intelligence.alerts import (
+    check_breaking_changes,
     check_high_fan_in,
     check_new_cross_team_dependencies,
     check_orphaned_service,
@@ -127,3 +128,120 @@ def test_does_not_flag_service_with_a_team():
     alerts = check_unowned_service("payments-service", team="payments-team")
 
     assert alerts == []
+
+
+# --- BREAKING_CHANGE ---
+
+
+def _sig(name, params):
+    """params: list of (name, type) tuples for brevity in tests --
+    converted to the real {"name", "type"} dict shape here."""
+    return {"name": name, "params": [{"name": n, "type": t} for n, t in params]}
+
+
+def test_flags_removed_public_function_when_service_has_dependents():
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = []
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert len(alerts) == 1
+    assert alerts[0].type == "BREAKING_CHANGE"
+    assert alerts[0].severity == "high"
+
+
+def test_flags_parameter_count_change_when_service_has_dependents():
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = [_sig("createCharge", [("amount", "int"), ("currency", "str")])]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert len(alerts) == 1
+    assert "createCharge" in alerts[0].message
+
+
+def test_flags_type_change_at_same_position_when_both_sides_typed():
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = [_sig("createCharge", [("amount", "str")])]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert len(alerts) == 1
+    assert "int" in alerts[0].message and "str" in alerts[0].message
+
+
+def test_does_not_flag_pure_parameter_rename():
+    # Same position, same type, only the name differs -- most real
+    # callers invoke positionally, so this is deliberately NOT breaking.
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = [_sig("createCharge", [("total", "int")])]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert alerts == []
+
+
+def test_does_not_flag_type_change_when_one_side_has_no_type_info():
+    # Only the new side is typed -- there's nothing concrete to compare
+    # against on the old side, so this isn't flagged as a type change
+    # (gaining an annotation isn't itself a behavior change).
+    old_sigs = [_sig("createCharge", [("amount", None)])]
+    new_sigs = [_sig("createCharge", [("amount", "int")])]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert alerts == []
+
+
+def test_does_not_flag_when_service_has_no_dependents():
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = []  # removed, but nobody depends on this service
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream_edges=[])
+
+    assert alerts == []
+
+
+def test_does_not_flag_unchanged_signature():
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = [_sig("createCharge", [("amount", "int")])]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert alerts == []
+
+
+def test_does_not_flag_newly_added_function():
+    # Adding a new public function isn't breaking -- only removing or
+    # changing an existing one is.
+    old_sigs = [_sig("createCharge", [("amount", "int")])]
+    new_sigs = [
+        _sig("createCharge", [("amount", "int")]),
+        _sig("refundCharge", [("chargeId", "str")]),
+    ]
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert alerts == []
+
+
+def test_multiple_breaking_changes_all_reported():
+    old_sigs = [
+        _sig("createCharge", [("amount", "int")]),
+        _sig("refundCharge", [("chargeId", "str")]),
+    ]
+    new_sigs = [
+        _sig("createCharge", [("amount", "int"), ("currency", "str")])
+    ]  # refundCharge removed, createCharge's param count changed
+    upstream = [_edge("checkout-service", "payments-service")]
+
+    alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
+
+    assert len(alerts) == 2

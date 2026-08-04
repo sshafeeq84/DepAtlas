@@ -46,3 +46,33 @@ class ServiceNode:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class PublicSignature:
+    """A single public function/method belonging to a service, as of one
+    scan. This is deliberately a different shape from DependencyEdge --
+    it describes a fact about the service's *own* interface ("this
+    service exposes a function named X taking params [a, b]"), not a
+    relationship to another service. Used by the BREAKING_CHANGE alert
+    (SPEC.md section 10) to compare a service's public interface across
+    two scans.
+
+    `params` is a list of {"name": str, "type": str | None} dicts, one
+    per parameter, in declared order -- not just a list of names. The
+    type is None when the language/parser can't determine one (e.g. an
+    untyped Python parameter, or any JS/TS parameter, since esprima
+    doesn't parse TypeScript's type annotations). Capturing type
+    alongside position is what lets BREAKING_CHANGE tell a real type
+    change apart from a harmless parameter rename -- see
+    depgraph/intelligence/alerts.py's check_breaking_changes.
+    """
+
+    service: str
+    name: str
+    params: list[dict]
+    source_file: str
+    source_line: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)

@@ -78,3 +78,28 @@ def test_total_edge_count():
     # 2 imports + 1 FeignClient + 2 RestTemplate calls = 5
     edges = _scan()
     assert len(edges) == 5
+
+
+# --- extract_signatures ---
+
+
+def test_extract_signatures_finds_public_methods_only(tmp_path):
+    from depgraph.parsers.java_parser import extract_signatures
+
+    (tmp_path / "Service.java").write_text(
+        "package com.org.payments;\n"
+        "public class Service {\n"
+        "    public void publicMethod(String userId, int amount) {}\n"
+        "    private void privateHelper() {}\n"
+        "}\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert len(signatures) == 1
+    assert signatures[0].name == "publicMethod"
+    assert signatures[0].params == [
+        {"name": "userId", "type": "String"},
+        {"name": "amount", "type": "int"},
+    ]
+    assert signatures[0].service == "payments-service"

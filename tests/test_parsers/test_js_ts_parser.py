@@ -88,3 +88,46 @@ def test_typescript_only_syntax_is_skipped_not_crashed(capsys):
     captured = capsys.readouterr()
     assert "skipping" in captured.err
     assert "typed.ts" in captured.err
+
+
+# --- extract_signatures ---
+
+
+def test_extract_signatures_finds_exported_functions_only(tmp_path):
+    from depgraph.parsers.js_ts_parser import extract_signatures
+
+    (tmp_path / "service.js").write_text(
+        "export function verifyToken(token, options) {\n"
+        "  return true;\n"
+        "}\n"
+        "\n"
+        "function notExported(x) {\n"
+        "  return x;\n"
+        "}\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert len(signatures) == 1
+    assert signatures[0].name == "verifyToken"
+    assert signatures[0].params == [
+        {"name": "token", "type": None},
+        {"name": "options", "type": None},
+    ]
+
+
+def test_extract_signatures_finds_export_default_function(tmp_path):
+    from depgraph.parsers.js_ts_parser import extract_signatures
+
+    (tmp_path / "handler.js").write_text(
+        "export default function mainHandler(req, res) {\n" "  return res;\n" "}\n"
+    )
+
+    signatures = extract_signatures(tmp_path, "payments-service")
+
+    assert len(signatures) == 1
+    assert signatures[0].name == "mainHandler"
+    assert signatures[0].params == [
+        {"name": "req", "type": None},
+        {"name": "res", "type": None},
+    ]

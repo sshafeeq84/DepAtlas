@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from depgraph.graph.models import DependencyEdge, ServiceNode
+from depgraph.graph.models import DependencyEdge, PublicSignature, ServiceNode
 from depgraph.graph.store import GraphStore
 
 
@@ -139,3 +139,62 @@ def test_all_edges_returns_every_edge_across_repos(store):
 
     targets = {e["target_service"] for e in all_edges}
     assert targets == {"auth-service", "billing-service"}
+
+
+def test_save_snapshot_round_trips_signatures(store):
+    sig = PublicSignature(
+        service="payments-service",
+        name="createCharge",
+        params=[{"name": "amount", "type": "int"}],
+        source_file="/repos/payments/charge.py",
+        source_line=5,
+    )
+    snapshot_id = store.save_snapshot("/repos/payments", [], signatures=[sig])
+
+    snapshot = store.get_snapshot(snapshot_id)
+
+    assert len(snapshot["signatures"]) == 1
+    assert snapshot["signatures"][0]["name"] == "createCharge"
+    assert snapshot["signatures"][0]["params"] == [{"name": "amount", "type": "int"}]
+
+
+def test_save_snapshot_defaults_to_empty_signatures(store):
+    snapshot_id = store.save_snapshot("/repos/payments", [])
+
+    snapshot = store.get_snapshot(snapshot_id)
+
+    assert snapshot["signatures"] == []
+
+
+def test_existing_database_without_signatures_column_gets_migrated(tmp_path):
+    # Simulate a database created before signatures_json existed (i.e.
+    # before this migration was added) by building the old schema by
+    # hand, then confirm opening it with GraphStore adds the column
+    # instead of crashing -- this is the actual scenario a real user
+    # hits when they pull in this change with an existing local graph.db.
+    import sqlite3
+
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            edges_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO snapshots (repo, created_at, edges_json) VALUES (?, ?, ?)",
+        ("/repos/payments", "2026-01-01T00:00:00", "[]"),
+    )
+    conn.commit()
+    conn.close()
+
+    store = GraphStore(db_path)
+    snapshot = store.get_snapshot(1)
+    store.close()
+
+    assert snapshot["signatures"] == []  # migrated column defaults to '[]'

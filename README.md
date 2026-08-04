@@ -102,10 +102,27 @@ This is an early, in-progress build. What works today:
   genuine appearance/disappearance of a dependency counts. See
   `tests/test_intelligence/test_diff.py` and the snapshot tests in
   `test_graph/test_store.py`.
-- **Alerts** (SPEC.md section 10): four of the five defined alert types
-  are implemented and checked automatically after every `scan` (disable
+- **Alerts** (SPEC.md section 10): all five defined alert types are
+  implemented and checked automatically after every `scan` (disable
   with `--no-alerts`), or on demand across the whole stored graph via
   `depgraph alerts [--severity high|medium|low]`:
+  - `BREAKING_CHANGE` (high) — a public function was removed, or its
+    parameter count changed, or a parameter's *type* changed at the
+    same position (when both the old and new versions have a known
+    type — Java always does; Python only when annotated; JS/TS never,
+    since esprima can't see TypeScript's type annotations) — between
+    two scans of a service **that has at least one known dependent**
+    (a signature change on a service nobody calls doesn't trigger this,
+    per SPEC.md's own trigger wording). A pure parameter *rename* (same
+    position, same type-or-lack-of-type) is deliberately **not**
+    flagged — most real callers invoke positionally, so a rename alone
+    doesn't break them. Detected via each parser's
+    `extract_signatures()`: module-level functions and public class
+    methods for Python (non-underscore-prefixed), `public`-modifier
+    methods for Java, and `export`/`export default` functions for
+    JS/TS. See the module docstring in `depgraph/intelligence/alerts.py`
+    for the full reasoning, and `tests/test_intelligence/test_alerts.py`
+    for cases covering rename-vs-type-change-vs-count-change directly.
   - `NEW_CROSS_TEAM_DEPENDENCY` (medium) — a newly-added edge (from a
     diff) whose source and target services have different, both-known
     teams.
@@ -115,17 +132,9 @@ This is an early, in-progress build. What works today:
     dependencies at all.
   - `UNOWNED_SERVICE` (low) — a service with no resolved team, from
     either CODEOWNERS or the manifest fallback.
-  - **Not implemented: `BREAKING_CHANGE` (high).** Its trigger ("a
-    public interface removed or signature changed in a service with
-    known dependents") needs tracking function/method signatures across
-    scans — a fundamentally different analysis than the dependency-edge
-    model this project builds. `DependencyEdge` records "X depends on
-    Y," not "what does Y's public interface look like" — there's
-    nothing in the current data model to diff a signature against. This
-    is a deliberate scope boundary; see
-    `depgraph/intelligence/alerts.py`'s module docstring.
-  - See `tests/test_intelligence/test_alerts.py` for the other four,
-    each covered by both a positive and negative case.
+  - See `tests/test_intelligence/test_alerts.py` — every check has both
+    a positive and negative case, including the "no known dependents
+    means no BREAKING_CHANGE alert" rule specifically.
 
 - `depgraph export --format json|dot --output <path>` exports the
   *whole* persisted graph (every service and edge currently in the
@@ -136,8 +145,7 @@ This is an early, in-progress build. What works today:
   `tests/test_output/`.
 
 Not yet built (see `docs/SPEC.md` for full v1 scope): boto3/grpc
-detection, full TypeScript syntax support, and BREAKING_CHANGE alerting
-(see above for why).
+detection and full TypeScript syntax support.
 
 ## Quick start
 

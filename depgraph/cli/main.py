@@ -14,9 +14,18 @@ from pathlib import Path
 
 import click
 
-from depgraph.parsers.python_parser import parse_repo as parse_python_repo
-from depgraph.parsers.java_parser import parse_repo as parse_java_repo
-from depgraph.parsers.js_ts_parser import parse_repo as parse_js_ts_repo
+from depgraph.parsers.python_parser import (
+    parse_repo as parse_python_repo,
+    extract_signatures as extract_python_signatures,
+)
+from depgraph.parsers.java_parser import (
+    parse_repo as parse_java_repo,
+    extract_signatures as extract_java_signatures,
+)
+from depgraph.parsers.js_ts_parser import (
+    parse_repo as parse_js_ts_repo,
+    extract_signatures as extract_js_ts_signatures,
+)
 from depgraph.output.json_export import export_edges, export_graph_json
 from depgraph.output.dot_export import export_dot
 from depgraph.graph.builder import build_graph
@@ -25,6 +34,7 @@ from depgraph.ownership.codeowners import parse_codeowners
 from depgraph.ownership.manifest import parse_ownership_manifest
 from depgraph.intelligence.diff import compute_diff
 from depgraph.intelligence.alerts import (
+    check_breaking_changes,
     check_high_fan_in,
     check_new_cross_team_dependencies,
     check_orphaned_service,
@@ -45,6 +55,12 @@ PARSERS = {
     "python": parse_python_repo,
     "java": parse_java_repo,
     "javascript": parse_js_ts_repo,
+}
+
+SIGNATURE_EXTRACTORS = {
+    "python": extract_python_signatures,
+    "java": extract_java_signatures,
+    "javascript": extract_js_ts_signatures,
 }
 
 
@@ -253,17 +269,21 @@ def scan(
         manifest_teams=manifest_teams,
     )
 
+    extract_signatures_fn = SIGNATURE_EXTRACTORS[language]
+    signatures = extract_signatures_fn(repo_path, self_service)
+
     store = GraphStore(db_path)
     store.upsert_services(nodes)
     store.replace_edges_for_repo(str(repo_path), edges)
-    snapshot_id = store.save_snapshot(str(repo_path), edges)
+    snapshot_id = store.save_snapshot(str(repo_path), edges, signatures=signatures)
 
     triggered_alerts = []
     if alerts_enabled:
         service_teams = {s["id"]: s["team"] for s in store.all_services()}
 
-        # NEW_CROSS_TEAM_DEPENDENCY needs a diff -- only possible once
-        # this repo has at least two snapshots to compare.
+        # NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE both need a diff
+        # -- only possible once this repo has at least two snapshots to
+        # compare.
         recent = store.list_snapshots(repo=str(repo_path), limit=2)
         if len(recent) == 2:
             old_snapshot = store.get_snapshot(recent[1]["id"])
@@ -271,6 +291,16 @@ def scan(
             diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
             triggered_alerts += check_new_cross_team_dependencies(
                 diff_result["added"], service_teams
+            )
+
+            upstream_for_breaking_check = store.edges_for_service(
+                self_service, direction="upstream"
+            )
+            triggered_alerts += check_breaking_changes(
+                self_service,
+                old_snapshot["signatures"],
+                new_snapshot["signatures"],
+                upstream_for_breaking_check,
             )
 
         # The other three are point-in-time checks against the service
@@ -522,20 +552,22 @@ def diff(
     help="Path to the SQLite graph store.",
 )
 def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) -> None:
-    """Check the whole stored graph for NEW_CROSS_TEAM_DEPENDENCY,
-    ORPHANED_SERVICE, UNOWNED_SERVICE, and HIGH_FAN_IN (SPEC.md section 10).
-
-    BREAKING_CHANGE is not implemented -- see depgraph/intelligence/alerts.py
-    for why (it needs signature-level tracking this project doesn't do).
+    """Check the whole stored graph for all five SPEC.md section 10
+    alert types: NEW_CROSS_TEAM_DEPENDENCY, HIGH_FAN_IN, ORPHANED_SERVICE,
+    UNOWNED_SERVICE, and BREAKING_CHANGE.
     """
     store = GraphStore(db_path)
     all_services = store.all_services()
     service_teams = {s["id"]: s["team"] for s in all_services}
+    # A repo maps to exactly one "real" (non-placeholder) service node --
+    # the one that was actually scanned there -- needed to know which
+    # service's signatures to diff for BREAKING_CHANGE.
+    repo_to_service = {s["repo"]: s["id"] for s in all_services if s["repo"]}
 
     triggered: list = []
 
-    # NEW_CROSS_TEAM_DEPENDENCY: for every distinct repo with at least
-    # two snapshots, diff the two most recent and check the added edges.
+    # NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE: for every distinct
+    # repo with at least two snapshots, diff the two most recent.
     seen_repos = {s["repo"] for s in all_services if s["repo"]}
     for repo in seen_repos:
         recent = store.list_snapshots(repo=repo, limit=2)
@@ -544,6 +576,13 @@ def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) ->
             new_snapshot = store.get_snapshot(recent[0]["id"])
             diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
             triggered += check_new_cross_team_dependencies(diff_result["added"], service_teams)
+
+            self_service = repo_to_service.get(repo)
+            if self_service:
+                upstream = store.edges_for_service(self_service, direction="upstream")
+                triggered += check_breaking_changes(
+                    self_service, old_snapshot["signatures"], new_snapshot["signatures"], upstream
+                )
 
     # The other three are point-in-time checks against every known service.
     for svc in all_services:
