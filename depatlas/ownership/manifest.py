@@ -1,10 +1,10 @@
-"""depgraph.yaml ownership manifest (SPEC.md section 8, priority 2:
-"depgraph.yaml manifest — explicit service-to-team mapping, for repos
+"""depatlas.yaml ownership manifest (SPEC.md section 8, priority 2:
+"depatlas.yaml manifest — explicit service-to-team mapping, for repos
 without CODEOWNERS").
 
 This is deliberately much simpler than the CODEOWNERS parser: CODEOWNERS
 maps file *patterns* to owners and needs per-file resolution + a
-majority vote to name a single team for a service. A depgraph.yaml
+majority vote to name a single team for a service. A depatlas.yaml
 manifest instead states the team directly, one service name -> one team,
 so there's nothing to infer -- just a lookup.
 
@@ -35,7 +35,7 @@ import yaml
 
 
 def parse_ownership_manifest(path: Path) -> dict[str, str]:
-    """Parse a depgraph.yaml manifest into a {service_name: team} mapping.
+    """Parse a depatlas.yaml manifest into a {service_name: team} mapping.
 
     Entries missing a `name` or `team` are skipped rather than raising --
     a manifest is allowed to declare a service without a team yet (e.g.

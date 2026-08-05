@@ -4,7 +4,7 @@ import zipfile
 import pytest
 import requests
 
-from depgraph.connectors.github import (
+from depatlas.connectors.github import (
     GitHubConnectorError,
     TOKEN_ENV_VAR,
     fetch_repo,

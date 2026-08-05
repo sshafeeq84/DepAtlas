@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from depgraph.graph.builder import build_graph
-from depgraph.graph.models import DependencyEdge
+from depatlas.graph.builder import build_graph
+from depatlas.graph.models import DependencyEdge
 
 
 def _edge(source, target):
@@ -46,7 +46,7 @@ def test_team_is_none_when_no_codeowners_rules_supplied():
 
 
 def test_team_resolved_via_codeowners_majority(tmp_path):
-    from depgraph.ownership.codeowners import parse_codeowners
+    from depatlas.ownership.codeowners import parse_codeowners
 
     (tmp_path / "a.py").write_text("# fake")
     (tmp_path / "b.py").write_text("# fake")
@@ -63,7 +63,7 @@ def test_dependency_placeholder_gets_no_team_from_codeowners_alone(tmp_path):
     # CODEOWNERS can't resolve a placeholder's team -- there's no file
     # tree for a service we haven't scanned directly. (The manifest CAN
     # resolve it -- see test_dependency_placeholder_gets_team_from_manifest.)
-    from depgraph.ownership.codeowners import parse_codeowners
+    from depatlas.ownership.codeowners import parse_codeowners
 
     (tmp_path / "a.py").write_text("# fake")
     (tmp_path / "CODEOWNERS").write_text("*.py @payments-team\n")
@@ -98,7 +98,7 @@ def test_codeowners_resolves_non_python_files_too(tmp_path):
     # Regression test: _resolve_team used to hardcode rglob("*.py"), so
     # CODEOWNERS resolution silently did nothing for Java/JS repos. A
     # repo with only a .java file must still resolve a team.
-    from depgraph.ownership.codeowners import parse_codeowners
+    from depatlas.ownership.codeowners import parse_codeowners
 
     (tmp_path / "PaymentsApplication.java").write_text("// fake")
     (tmp_path / "CODEOWNERS").write_text("*.java @payments-team\n")
@@ -122,7 +122,7 @@ def test_manifest_used_when_no_codeowners_given(tmp_path):
 
 
 def test_manifest_used_when_codeowners_resolves_nothing(tmp_path):
-    from depgraph.ownership.codeowners import parse_codeowners
+    from depatlas.ownership.codeowners import parse_codeowners
 
     (tmp_path / "a.py").write_text("# fake")
     # A CODEOWNERS file that matches nothing in this repo.
@@ -143,7 +143,7 @@ def test_manifest_used_when_codeowners_resolves_nothing(tmp_path):
 
 
 def test_codeowners_takes_priority_over_manifest_when_both_resolve(tmp_path):
-    from depgraph.ownership.codeowners import parse_codeowners
+    from depatlas.ownership.codeowners import parse_codeowners
 
     (tmp_path / "a.py").write_text("# fake")
     (tmp_path / "CODEOWNERS").write_text("*.py @payments-team-from-codeowners\n")

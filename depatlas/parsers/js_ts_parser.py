@@ -38,7 +38,7 @@ from pathlib import Path
 import esprima
 from esprima.nodes import Node
 
-from depgraph.graph.models import DependencyEdge, PublicSignature
+from depatlas.graph.models import DependencyEdge, PublicSignature
 
 HTTP_CLIENT_OBJECTS = {"axios", "got"}
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}

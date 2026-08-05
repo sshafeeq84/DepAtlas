@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from depgraph.graph.models import DependencyEdge
+from depatlas.graph.models import DependencyEdge
 
 
 def export_edges(edges: list[DependencyEdge], output_path: Path | None = None) -> str:
@@ -24,7 +24,7 @@ def export_graph_json(
     """Export the whole persisted graph (as returned by
     GraphStore.all_services() / all_edges(), already plain dicts -- not
     DependencyEdge/ServiceNode objects) to JSON. Used by
-    `depgraph export --format json`, as opposed to `export_edges`, which
+    `depatlas export --format json`, as opposed to `export_edges`, which
     is what a single `scan`'s `--output` writes.
     """
     payload = {"nodes": nodes, "edges": edges}

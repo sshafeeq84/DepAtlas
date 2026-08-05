@@ -25,7 +25,7 @@ Team resolution (SPEC.md section 8) follows the spec's priority order:
      service's team. A service with a few stray files owned by a
      different team still gets attributed to whichever team owns most
      of its code.
-  2. depgraph.yaml manifest -- an explicit {service_name: team} lookup,
+  2. depatlas.yaml manifest -- an explicit {service_name: team} lookup,
      used only when CODEOWNERS wasn't supplied or didn't resolve a team.
   3. Unowned -- if neither source names a team, `ServiceNode.team` stays
      None, matching SPEC.md 8's "Fallback -- unowned; flagged in output."
@@ -37,8 +37,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from depgraph.graph.models import DependencyEdge, ServiceNode
-from depgraph.ownership.codeowners import OwnershipRule, resolve_owner
+from depatlas.graph.models import DependencyEdge, ServiceNode
+from depatlas.ownership.codeowners import OwnershipRule, resolve_owner
 
 
 def _resolve_team(
@@ -108,7 +108,7 @@ def build_graph(
             # unknown. CODEOWNERS can't resolve a team for it (there's no
             # file tree to check), but the manifest is a flat name->team
             # lookup that doesn't require having scanned the service's
-            # own repo -- SPEC.md's own depgraph.yaml example lists every
+            # own repo -- SPEC.md's own depatlas.yaml example lists every
             # service org-wide, not just the one being scanned, so it
             # should resolve here too.
             placeholder_team = manifest_teams.get(name) if manifest_teams else None

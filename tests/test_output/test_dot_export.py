@@ -1,10 +1,10 @@
-from depgraph.output.dot_export import export_dot
+from depatlas.output.dot_export import export_dot
 
 
 def test_produces_valid_digraph_wrapper():
     text = export_dot([], [])
 
-    assert text.startswith("digraph depgraph {")
+    assert text.startswith("digraph depatlas {")
     assert text.endswith("}")
 
 

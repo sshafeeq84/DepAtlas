@@ -1,5 +1,5 @@
 """DOT (Graphviz) export (SPEC.md section 4.1, "Graph output": JSON, DOT
-format; and section 9's `depgraph export --format dot`).
+format; and section 9's `depatlas export --format dot`).
 
 Produces a directed graph in Graphviz's DOT language: one node per
 service (labeled with its team, if known) and one edge per dependency
@@ -22,7 +22,7 @@ def export_dot(nodes: list[dict], edges: list[dict]) -> str:
     GraphStore.all_services()) and edge dicts (as returned by
     GraphStore.all_edges()) as a Graphviz DOT digraph.
     """
-    lines = ["digraph depgraph {"]
+    lines = ["digraph depatlas {"]
 
     for node in nodes:
         label = _escape(node["id"])

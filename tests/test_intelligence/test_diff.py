@@ -1,4 +1,4 @@
-from depgraph.intelligence.diff import compute_diff
+from depatlas.intelligence.diff import compute_diff
 
 
 def _edge(source, target, edge_type="import", source_file="charge.py", line=1, confidence="high"):

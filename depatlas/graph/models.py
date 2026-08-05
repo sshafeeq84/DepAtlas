@@ -1,4 +1,4 @@
-"""Core data model for DepGraph.
+"""Core data model for DepAtlas.
 
 These mirror the shapes defined in SPEC.md section 6. Keeping them as
 simple dataclasses (rather than a heavier ORM model) makes them trivial
@@ -65,7 +65,7 @@ class PublicSignature:
     doesn't parse TypeScript's type annotations). Capturing type
     alongside position is what lets BREAKING_CHANGE tell a real type
     change apart from a harmless parameter rename -- see
-    depgraph/intelligence/alerts.py's check_breaking_changes.
+    depatlas/intelligence/alerts.py's check_breaking_changes.
     """
 
     service: str

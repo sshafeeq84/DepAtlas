@@ -23,7 +23,7 @@ from pathlib import Path
 
 import javalang
 
-from depgraph.graph.models import DependencyEdge, PublicSignature
+from depatlas.graph.models import DependencyEdge, PublicSignature
 
 # Common Spring RestTemplate / WebClient / generic HTTP-client method
 # names. This is intentionally a flat method-name allowlist rather than

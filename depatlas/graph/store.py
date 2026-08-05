@@ -30,7 +30,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from depgraph.graph.models import DependencyEdge, ServiceNode
+from depatlas.graph.models import DependencyEdge, ServiceNode
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -228,7 +228,7 @@ class GraphStore:
 
     def all_edges(self) -> list[dict]:
         """Every edge currently in the live `edges` table, across every
-        repo that's been scanned -- used by `depgraph export`, which
+        repo that's been scanned -- used by `depatlas export`, which
         exports the whole persisted graph rather than one repo's edges.
         """
         rows = self._conn.execute(

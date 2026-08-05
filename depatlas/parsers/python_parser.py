@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from depgraph.graph.models import DependencyEdge, PublicSignature
+from depatlas.graph.models import DependencyEdge, PublicSignature
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 

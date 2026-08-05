@@ -1,7 +1,7 @@
 import pytest
 from botocore.exceptions import ClientError
 
-from depgraph.connectors.codecommit import (
+from depatlas.connectors.codecommit import (
     PROFILE_ENV_VAR,
     CodeCommitConnectorError,
     fetch_repo,
@@ -96,14 +96,14 @@ def test_get_client_uses_profile_env_when_set(monkeypatch):
             calls["region_name"] = region_name
             return "fake-client"
 
-    import depgraph.connectors.codecommit as codecommit_module
+    import depatlas.connectors.codecommit as codecommit_module
 
-    monkeypatch.setenv(PROFILE_ENV_VAR, "depgraph-profile")
+    monkeypatch.setenv(PROFILE_ENV_VAR, "depatlas-profile")
     monkeypatch.setattr(codecommit_module.boto3, "Session", FakeSession)
 
     result = get_client("us-east-1")
 
-    assert calls["profile_name"] == "depgraph-profile"
+    assert calls["profile_name"] == "depatlas-profile"
     assert calls["service"] == "codecommit"
     assert calls["region_name"] == "us-east-1"
     assert result == "fake-client"
@@ -119,7 +119,7 @@ def test_get_client_falls_back_to_default_session_without_profile(monkeypatch):
         def client(self, service, region_name=None):
             return "fake-client"
 
-    import depgraph.connectors.codecommit as codecommit_module
+    import depatlas.connectors.codecommit as codecommit_module
 
     monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
     monkeypatch.setattr(codecommit_module.boto3, "Session", FakeSession)
