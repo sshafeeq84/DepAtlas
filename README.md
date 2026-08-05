@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 *(Originally released as DepGraph — renamed to DepAtlas. The original
-design doc in [`docs/SPEC.pdf`](docs/SPEC.pdf) predates the rename and
+design doc in [`docs/SPEC.pdf`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/SPEC.pdf) predates the rename and
 still uses the old name.)*
 
 DepAtlas reads your codebase and builds a living dependency graph across
@@ -17,14 +17,14 @@ knows what depends on what. DepAtlas reads the code itself — the one
 source of truth that can't drift out of date — and turns it into a
 queryable graph, automatically.
 
-Full original design in [`docs/SPEC.pdf`](docs/SPEC.pdf).
+Full original design in [`docs/SPEC.pdf`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/SPEC.pdf).
 
 <p align="center">
-  <img src="docs/images/example_dependency_graph.png" alt="Example dependency graph exported by depatlas, showing five services colored by owning team, generated with depatlas export --format dot" width="850">
+  <img src="https://raw.githubusercontent.com/sshafeeq84/DepAtlas/main/docs/images/example_dependency_graph.png" alt="Example dependency graph exported by depatlas, showing five services colored by owning team, generated with depatlas export --format dot" width="850">
 </p>
 
 <p align="center">
-  <img src="docs/images/example_alerts_terminal.png" alt="Terminal output showing depatlas detecting a new cross-team dependency" width="850">
+  <img src="https://raw.githubusercontent.com/sshafeeq84/DepAtlas/main/docs/images/example_alerts_terminal.png" alt="Terminal output showing depatlas detecting a new cross-team dependency" width="850">
 </p>
 
 ## Status
@@ -223,7 +223,7 @@ depatlas alerts --severity medium
 ## Known limitations
 
 A couple of things are deliberately out of scope for now, documented in
-the relevant module and in [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md):
+the relevant module and in [`docs/CONTRIBUTING.md`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/CONTRIBUTING.md):
 
 - **Full TypeScript syntax** — `esprima` parses JavaScript, not
   TypeScript-specific syntax (type annotations, interfaces). A `.ts`
@@ -263,9 +263,9 @@ depatlas/
 
 ## Contributing
 
-See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for setup,
+See [`docs/CONTRIBUTING.md`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/CONTRIBUTING.md) for setup,
 testing conventions, and known scope boundaries.
 
 ## License
 
-Apache 2.0 — see [`LICENSE`](LICENSE).
+Apache 2.0 — see [`LICENSE`](https://github.com/sshafeeq84/DepAtlas/blob/main/LICENSE).
