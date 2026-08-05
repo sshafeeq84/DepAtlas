@@ -1,6 +1,6 @@
 """CLI smoke tests.
 
-No other test file imports depgraph.cli.main at all -- every other test
+No other test file imports depatlas.cli.main at all -- every other test
 exercises the underlying modules (parsers, store, connectors, etc.)
 directly. That's normally the right call for fast, focused unit tests,
 but it means a bug in the CLI wiring itself (a bad Click decorator, a
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from depgraph.cli.main import cli
+from depatlas.cli.main import cli
 
 
 def test_cli_help_runs_without_error():
@@ -29,7 +29,7 @@ def test_every_command_help_runs_without_error():
     # This is the check that would have caught a duplicate Click option
     # name (like --from being declared with two variable names at once)
     # -- that kind of bug raises at decoration time, i.e. the moment
-    # depgraph.cli.main is imported, which only happens when a test
+    # depatlas.cli.main is imported, which only happens when a test
     # actually imports this module.
     runner = CliRunner()
     for command_name in ("scan", "query", "snapshots", "diff", "alerts", "export"):

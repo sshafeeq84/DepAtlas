@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from depgraph.ownership.manifest import parse_ownership_manifest
+from depatlas.ownership.manifest import parse_ownership_manifest
 
 
 def _write_manifest(tmp_path: Path, content: str) -> Path:
-    p = tmp_path / "depgraph.yaml"
+    p = tmp_path / "depatlas.yaml"
     p.write_text(content, encoding="utf-8")
     return p
 

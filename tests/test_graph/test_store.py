@@ -2,13 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from depgraph.graph.models import DependencyEdge, PublicSignature, ServiceNode
-from depgraph.graph.store import GraphStore
+from depatlas.graph.models import DependencyEdge, PublicSignature, ServiceNode
+from depatlas.graph.store import GraphStore
 
 
 @pytest.fixture
 def store(tmp_path):
-    db_path = tmp_path / ".depgraph" / "graph.db"
+    db_path = tmp_path / ".depatlas" / "graph.db"
     s = GraphStore(db_path)
     yield s
     s.close()

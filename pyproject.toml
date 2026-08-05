@@ -1,5 +1,5 @@
 [project]
-name = "depgraph"
+name = "depatlas"
 version = "0.1.0"
 description = "Reads your codebase and builds a living dependency graph across services, teams, and repositories."
 readme = "README.md"
@@ -20,11 +20,11 @@ dev = [
 ]
 
 [project.scripts]
-depgraph = "depgraph.cli.main:cli"
+depatlas = "depatlas.cli.main:cli"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["depgraph*"]
+include = ["depatlas*"]

@@ -121,7 +121,7 @@ def check_orphaned_service(
 
 def check_unowned_service(service: str, team: str | None) -> list[Alert]:
     """Flag a service with no resolved team, from either CODEOWNERS or
-    the depgraph.yaml manifest fallback.
+    the depatlas.yaml manifest fallback.
     """
     if team is None:
         return [

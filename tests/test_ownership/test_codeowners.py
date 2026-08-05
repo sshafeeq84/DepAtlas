@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from depgraph.ownership.codeowners import parse_codeowners, resolve_owner
+from depatlas.ownership.codeowners import parse_codeowners, resolve_owner
 
 
 def _write_codeowners(tmp_path: Path, content: str) -> Path:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from depgraph.parsers.js_ts_parser import parse_repo
+from depatlas.parsers.js_ts_parser import parse_repo
 
 FIXTURE_REPO = Path(__file__).parent.parent / "fixtures" / "sample_repo_js" / "payments"
 
@@ -79,7 +79,7 @@ def test_total_edge_count():
 
 
 def test_typescript_only_syntax_is_skipped_not_crashed(capsys):
-    from depgraph.parsers.js_ts_parser import parse_file
+    from depatlas.parsers.js_ts_parser import parse_file
 
     typed_file = FIXTURE_REPO / "src" / "typed.ts"
     edges = parse_file(typed_file, KNOWN_SERVICES, KNOWN_ENDPOINTS)
@@ -94,7 +94,7 @@ def test_typescript_only_syntax_is_skipped_not_crashed(capsys):
 
 
 def test_extract_signatures_finds_exported_functions_only(tmp_path):
-    from depgraph.parsers.js_ts_parser import extract_signatures
+    from depatlas.parsers.js_ts_parser import extract_signatures
 
     (tmp_path / "service.js").write_text(
         "export function verifyToken(token, options) {\n"
@@ -117,7 +117,7 @@ def test_extract_signatures_finds_exported_functions_only(tmp_path):
 
 
 def test_extract_signatures_finds_export_default_function(tmp_path):
-    from depgraph.parsers.js_ts_parser import extract_signatures
+    from depatlas.parsers.js_ts_parser import extract_signatures
 
     (tmp_path / "handler.js").write_text(
         "export default function mainHandler(req, res) {\n" "  return res;\n" "}\n"

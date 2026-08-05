@@ -1,4 +1,4 @@
-# Contributing to DepGraph
+# Contributing to DepAtlas
 
 Thanks for looking at this project. It's still early (v1, pre-1.0), so
 there's real room to shape how things develop.
@@ -6,8 +6,8 @@ there's real room to shape how things develop.
 ## Getting set up
 
 ```bash
-git clone https://github.com/sshafeeq84/Depgraph.git
-cd Depgraph
+git clone https://github.com/sshafeeq84/DepAtlas.git
+cd DepAtlas
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
@@ -20,13 +20,13 @@ please open an issue rather than assuming it's your environment.
 ## Project layout
 
 ```
-depgraph/
-├── depgraph/
+depatlas/
+├── depatlas/
 │   ├── cli/            # CLI entry points (click)
 │   ├── connectors/      # GitHub, CodeCommit -- get code onto local disk
 │   ├── parsers/          # Language parsers (Python/ast, Java/javalang, JS-TS/esprima)
 │   ├── graph/            # Data model, graph builder, SQLite store
-│   ├── ownership/        # CODEOWNERS + depgraph.yaml manifest resolution
+│   ├── ownership/        # CODEOWNERS + depatlas.yaml manifest resolution
 │   ├── intelligence/      # Diff engine, alerts
 │   └── output/            # JSON / DOT exporters
 ├── tests/                  # Mirrors the structure above, 1:1
@@ -58,7 +58,7 @@ medium/low depending on how much guessing is involved).
   at least a `--help` smoke test added to that file's command list; this
   is what catches wiring bugs (like a duplicated option name) that unit
   tests of the underlying modules can't see, since they never actually
-  import `depgraph.cli.main`.
+  import `depatlas.cli.main`.
 - Fixture repos live under `tests/fixtures/` — small, hand-written
   sample services per language, used across multiple test files.
 

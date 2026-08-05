@@ -22,7 +22,7 @@ from pathlib import Path
 import requests
 
 GITHUB_API_BASE = "https://api.github.com"
-TOKEN_ENV_VAR = "DEPGRAPH_GITHUB_TOKEN"
+TOKEN_ENV_VAR = "DEPATLAS_GITHUB_TOKEN"
 
 
 class GitHubConnectorError(Exception):
@@ -39,7 +39,7 @@ def _auth_headers(token: str) -> dict:
 
 def get_token() -> str:
     """Read the GitHub token from the environment (SPEC.md section 9's
-    config convention: token_env: DEPGRAPH_GITHUB_TOKEN). Never accepts
+    config convention: token_env: DEPATLAS_GITHUB_TOKEN). Never accepts
     a token as a CLI argument or writes one to disk (SPEC.md section 12:
     "Auth credential storage: Environment variables only -- never
     written to disk").

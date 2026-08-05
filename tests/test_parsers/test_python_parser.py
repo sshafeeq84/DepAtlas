@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from depgraph.parsers.python_parser import parse_repo
+from depatlas.parsers.python_parser import parse_repo
 
 FIXTURE_REPO = Path(__file__).parent.parent / "fixtures" / "sample_repo" / "payments"
 
@@ -76,7 +76,7 @@ def test_http_call_with_no_matching_service_is_skipped():
 
 
 def test_extract_signatures_finds_module_level_and_method_signatures(tmp_path):
-    from depgraph.parsers.python_parser import extract_signatures
+    from depatlas.parsers.python_parser import extract_signatures
 
     (tmp_path / "service.py").write_text(
         "def public_func(a, b):\n"
@@ -97,7 +97,7 @@ def test_extract_signatures_finds_module_level_and_method_signatures(tmp_path):
 
 
 def test_extract_signatures_excludes_underscore_prefixed_functions(tmp_path):
-    from depgraph.parsers.python_parser import extract_signatures
+    from depatlas.parsers.python_parser import extract_signatures
 
     (tmp_path / "service.py").write_text("def _private_func(x):\n    return x\n")
 
@@ -107,7 +107,7 @@ def test_extract_signatures_excludes_underscore_prefixed_functions(tmp_path):
 
 
 def test_extract_signatures_excludes_nested_functions(tmp_path):
-    from depgraph.parsers.python_parser import extract_signatures
+    from depatlas.parsers.python_parser import extract_signatures
 
     (tmp_path / "service.py").write_text(
         "def outer():\n" "    def inner_helper():\n" "        return 1\n" "    return inner_helper()\n"
@@ -120,7 +120,7 @@ def test_extract_signatures_excludes_nested_functions(tmp_path):
 
 
 def test_extract_signatures_captures_type_annotations(tmp_path):
-    from depgraph.parsers.python_parser import extract_signatures
+    from depatlas.parsers.python_parser import extract_signatures
 
     (tmp_path / "service.py").write_text(
         "def create_charge(amount: int, currency: str) -> bool:\n" "    return True\n"
@@ -135,7 +135,7 @@ def test_extract_signatures_captures_type_annotations(tmp_path):
 
 
 def test_extract_signatures_untyped_params_get_none_type(tmp_path):
-    from depgraph.parsers.python_parser import extract_signatures
+    from depatlas.parsers.python_parser import extract_signatures
 
     (tmp_path / "service.py").write_text("def create_charge(amount):\n" "    return True\n")
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from depgraph.parsers.java_parser import parse_repo
+from depatlas.parsers.java_parser import parse_repo
 
 FIXTURE_REPO = Path(__file__).parent.parent / "fixtures" / "sample_repo_java" / "payments"
 
@@ -84,7 +84,7 @@ def test_total_edge_count():
 
 
 def test_extract_signatures_finds_public_methods_only(tmp_path):
-    from depgraph.parsers.java_parser import extract_signatures
+    from depatlas.parsers.java_parser import extract_signatures
 
     (tmp_path / "Service.java").write_text(
         "package com.org.payments;\n"

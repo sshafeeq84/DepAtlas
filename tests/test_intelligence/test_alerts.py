@@ -1,4 +1,4 @@
-from depgraph.intelligence.alerts import (
+from depatlas.intelligence.alerts import (
     check_breaking_changes,
     check_high_fan_in,
     check_new_cross_team_dependencies,

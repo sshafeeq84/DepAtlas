@@ -1,7 +1,7 @@
 import json
 
-from depgraph.graph.models import DependencyEdge
-from depgraph.output.json_export import export_edges, export_graph_json
+from depatlas.graph.models import DependencyEdge
+from depatlas.output.json_export import export_edges, export_graph_json
 
 
 def test_export_edges_produces_valid_json(tmp_path):

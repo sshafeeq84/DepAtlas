@@ -1,4 +1,4 @@
-"""DepGraph CLI.
+"""DepAtlas CLI.
 
 v1 slice so far: `scan` (persists to a local SQLite graph store, with
 optional CODEOWNERS-based team resolution, against a local directory, a
@@ -14,26 +14,26 @@ from pathlib import Path
 
 import click
 
-from depgraph.parsers.python_parser import (
+from depatlas.parsers.python_parser import (
     parse_repo as parse_python_repo,
     extract_signatures as extract_python_signatures,
 )
-from depgraph.parsers.java_parser import (
+from depatlas.parsers.java_parser import (
     parse_repo as parse_java_repo,
     extract_signatures as extract_java_signatures,
 )
-from depgraph.parsers.js_ts_parser import (
+from depatlas.parsers.js_ts_parser import (
     parse_repo as parse_js_ts_repo,
     extract_signatures as extract_js_ts_signatures,
 )
-from depgraph.output.json_export import export_edges, export_graph_json
-from depgraph.output.dot_export import export_dot
-from depgraph.graph.builder import build_graph
-from depgraph.graph.store import GraphStore
-from depgraph.ownership.codeowners import parse_codeowners
-from depgraph.ownership.manifest import parse_ownership_manifest
-from depgraph.intelligence.diff import compute_diff
-from depgraph.intelligence.alerts import (
+from depatlas.output.json_export import export_edges, export_graph_json
+from depatlas.output.dot_export import export_dot
+from depatlas.graph.builder import build_graph
+from depatlas.graph.store import GraphStore
+from depatlas.ownership.codeowners import parse_codeowners
+from depatlas.ownership.manifest import parse_ownership_manifest
+from depatlas.intelligence.diff import compute_diff
+from depatlas.intelligence.alerts import (
     check_breaking_changes,
     check_high_fan_in,
     check_new_cross_team_dependencies,
@@ -41,15 +41,15 @@ from depgraph.intelligence.alerts import (
     check_unowned_service,
     DEFAULT_HIGH_FAN_IN_THRESHOLD,
 )
-from depgraph.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
-from depgraph.connectors.codecommit import (
+from depatlas.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
+from depatlas.connectors.codecommit import (
     CodeCommitConnectorError,
     fetch_repo as fetch_codecommit_repo,
     get_client as get_codecommit_client,
 )
 
-DEFAULT_DB_PATH = Path(".depgraph/graph.db")
-DEFAULT_CACHE_DIR = Path(".depgraph/cache")
+DEFAULT_DB_PATH = Path(".depatlas/graph.db")
+DEFAULT_CACHE_DIR = Path(".depatlas/cache")
 
 PARSERS = {
     "python": parse_python_repo,
@@ -66,7 +66,7 @@ SIGNATURE_EXTRACTORS = {
 
 @click.group()
 def cli() -> None:
-    """DepGraph -- map service-to-service dependencies from source code."""
+    """DepAtlas -- map service-to-service dependencies from source code."""
 
 
 @cli.command()
@@ -82,9 +82,9 @@ def cli() -> None:
     "github_repo",
     default=None,
     help=(
-        "A GitHub repo to scan, as 'owner/repo' (e.g. 'sshafeeq84/Depgraph'). "
+        "A GitHub repo to scan, as 'owner/repo' (e.g. 'sshafeeq84/DepAtlas'). "
         "Downloaded via the GitHub API using the token in the "
-        "DEPGRAPH_GITHUB_TOKEN environment variable."
+        "DEPATLAS_GITHUB_TOKEN environment variable."
     ),
 )
 @click.option(
@@ -93,7 +93,7 @@ def cli() -> None:
     default=None,
     help=(
         "An AWS CodeCommit repo name to scan. Fetched via boto3 using the "
-        "AWS profile named in the DEPGRAPH_AWS_PROFILE environment "
+        "AWS profile named in the DEPATLAS_AWS_PROFILE environment "
         "variable (falls back to the default AWS credential chain if unset)."
     ),
 )
@@ -131,7 +131,7 @@ def cli() -> None:
         "\"endpoints\" key maps URL host/path patterns to service names for "
         "resolving requests.get/post/etc. call sites, e.g. "
         "{\"endpoints\": {\"auth.internal\": \"auth-service\"}}. This replaces "
-        "the full depgraph.yaml manifest for now."
+        "the full depatlas.yaml manifest for now."
     ),
 )
 @click.option(
@@ -159,7 +159,7 @@ def cli() -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
     help=(
-        "Path to a depgraph.yaml ownership manifest, mapping service "
+        "Path to a depatlas.yaml ownership manifest, mapping service "
         "names directly to teams. Used only when --codeowners is not "
         "supplied, or resolves no team for this repo "
         "(SPEC.md section 8, priority 2)."
@@ -469,7 +469,7 @@ def diff(
 ) -> None:
     """Compare two snapshots and report added/removed dependencies.
 
-    Either give explicit ids with --from/--to (see `depgraph snapshots`
+    Either give explicit ids with --from/--to (see `depatlas snapshots`
     for available ids), or use --last 2 --repo <path> to compare a repo's
     two most recent scans.
     """
