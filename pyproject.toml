@@ -1,6 +1,6 @@
 [project]
 name = "depatlas"
-version = "0.1.1"
+version = "0.1.2"
 description = "Reads your codebase and builds a living dependency graph across services, teams, and repositories."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,10 +11,22 @@ authors = [
 keywords = [
     "dependency-graph",
     "static-analysis",
+    "code-analysis",
+    "dependency-scanner",
+    "service-mapping",
     "cli",
     "devtools",
     "codeowners",
     "microservices",
+    "python",
+    "java",
+    "javascript",
+    "typescript",
+    "github",
+    "aws",
+    "codecommit",
+    "sqlite",
+    "graphviz",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
