@@ -38,9 +38,9 @@ from pathlib import Path
 import esprima
 from esprima.nodes import Node
 
-from depatlas.fsutil import iter_files
+from depatlas.fsutil import is_test_path, iter_files, relative_to_repo, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
-from depatlas.resolution import resolve_endpoint
+from depatlas.resolution import drop_self_edges, resolve_endpoint
 
 HTTP_CLIENT_OBJECTS = {"axios", "got"}
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -115,7 +115,11 @@ def parse_file(
     known_endpoints = known_endpoints or {}
     source_service = known_services.get("__self__", "unknown-service")
 
-    source = file_path.read_text(encoding="utf-8")
+    try:
+        source = file_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        warn_skipped(file_path, exc)
+        return []
 
     try:
         tree = esprima.parseModule(source, options={"loc": True, "tolerant": True})
@@ -251,13 +255,23 @@ def parse_repo(
 
     for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
         for source_file in iter_files(repo_path, pattern):
-            edges.extend(parse_file(source_file, known_services, known_endpoints))
+            found = parse_file(source_file, known_services, known_endpoints)
+            for edge in found:
+                edge.source_file = relative_to_repo(edge.source_file, repo_path)
+            edges.extend(found)
 
     package_json = repo_path / "package.json"
     if package_json.exists():
-        edges.extend(parse_package_json(package_json, known_services))
+        try:
+            found = parse_package_json(package_json, known_services)
+        except (ValueError, OSError) as exc:  # bad JSON or non-UTF-8 bytes
+            warn_skipped(package_json, exc)
+            found = []
+        for edge in found:
+            edge.source_file = relative_to_repo(edge.source_file, repo_path)
+        edges.extend(found)
 
-    return edges
+    return drop_self_edges(edges)
 
 
 def _extract_signatures_from_file(
@@ -273,10 +287,10 @@ def _extract_signatures_from_file(
     can't parse is skipped (already warned about during the edge-parsing
     pass, so no need to warn twice here).
     """
-    source = file_path.read_text(encoding="utf-8")
     try:
+        source = file_path.read_text(encoding="utf-8")
         tree = esprima.parseModule(source, options={"loc": True, "tolerant": True})
-    except Exception:
+    except Exception:  # unreadable file, non-UTF-8 bytes, or syntax esprima rejects
         return []
 
     signatures: list[PublicSignature] = []
@@ -308,7 +322,7 @@ def _extract_signatures_from_file(
                     for p in declaration.params
                     if getattr(p, "type", None) == "Identifier"
                 ],
-                source_file=str(file_path),
+                source_file=rel_path or file_path.name,
                 source_line=node.loc.start.line if node.loc else 0,
                 qualname=f"{rel_path or file_path.name}::{declaration.id.name}",
             )
@@ -325,6 +339,8 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
     signatures: list[PublicSignature] = []
     for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
         for source_file in iter_files(repo_path, pattern):
+            if is_test_path(source_file.relative_to(repo_path)):
+                continue  # tests are not the service's public interface
             signatures.extend(
                 _extract_signatures_from_file(
                     source_file, self_service, source_file.relative_to(repo_path).as_posix()

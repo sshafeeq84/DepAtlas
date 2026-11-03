@@ -1,5 +1,8 @@
 import pytest
-from botocore.exceptions import ClientError
+
+pytest.importorskip("botocore")  # optional extra: depatlas[aws]
+
+from botocore.exceptions import ClientError  # noqa: E402
 
 from depatlas.connectors.codecommit import (
     PROFILE_ENV_VAR,

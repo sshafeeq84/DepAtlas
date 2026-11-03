@@ -250,7 +250,7 @@ def test_multiple_breaking_changes_all_reported():
 # --- signature identity (review fix): same name != same function ---
 
 
-def _sig(qualname, params, name=None):
+def _qsig(qualname, params, name=None):
     return {
         "name": name or qualname.split("::")[-1].split(".")[-1],
         "qualname": qualname,
@@ -262,25 +262,25 @@ _DEPENDENT = [{"source_service": "orders-service"}]
 
 
 def test_same_method_name_in_two_classes_is_not_confused():
-    old = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
-    new = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
+    old = [_qsig("a.py::A.get", [("x", "int")]), _qsig("a.py::B.get", [("x", "str")])]
+    new = [_qsig("a.py::A.get", [("x", "int")]), _qsig("a.py::B.get", [("x", "str")])]
     assert check_breaking_changes("svc", old, new, _DEPENDENT) == []
 
 
 def test_change_in_one_of_two_same_named_methods_is_attributed_correctly():
-    old = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
-    new = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "bytes")])]
+    old = [_qsig("a.py::A.get", [("x", "int")]), _qsig("a.py::B.get", [("x", "str")])]
+    new = [_qsig("a.py::A.get", [("x", "int")]), _qsig("a.py::B.get", [("x", "bytes")])]
     alerts = check_breaking_changes("svc", old, new, _DEPENDENT)
     assert len(alerts) == 1
     assert "B.get" in alerts[0].message
 
 
 def test_java_overloads_are_compared_as_a_group():
-    old = [_sig("C.java::C.find", [("id", "long")]), _sig("C.java::C.find", [("n", "String"), ("l", "int")])]
+    old = [_qsig("C.java::C.find", [("id", "long")]), _qsig("C.java::C.find", [("n", "String"), ("l", "int")])]
     same = list(old)
     assert check_breaking_changes("svc", old, same, _DEPENDENT) == []
 
-    dropped = [_sig("C.java::C.find", [("id", "long")])]
+    dropped = [_qsig("C.java::C.find", [("id", "long")])]
     alerts = check_breaking_changes("svc", old, dropped, _DEPENDENT)
     assert len(alerts) == 1
     assert "2 parameter" in alerts[0].message
@@ -288,5 +288,5 @@ def test_java_overloads_are_compared_as_a_group():
 
 def test_legacy_snapshots_without_qualname_still_compare_by_name():
     old = [{"name": "charge", "params": [{"name": "a", "type": "int"}]}]
-    new = [_sig("pay.py::charge", [("a", "int")])]
+    new = [_qsig("pay.py::charge", [("a", "int")])]
     assert check_breaking_changes("svc", old, new, _DEPENDENT) == []

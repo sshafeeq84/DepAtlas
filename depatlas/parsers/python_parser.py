@@ -20,9 +20,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from depatlas.fsutil import iter_files, warn_skipped
+from depatlas.fsutil import is_test_path, iter_files, relative_to_repo, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
-from depatlas.resolution import resolve_endpoint
+from depatlas.resolution import drop_self_edges, resolve_endpoint
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
@@ -114,21 +114,9 @@ class DependencyVisitor(ast.NodeVisitor):
 
 
 def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services: dict[str, str]):
-    """Try to match a URL string against a known service.
-
-    Two tiers, matching SPEC.pdf 7.4's confidence table:
-      - Medium: the URL contains a host/path pattern that's explicitly
-        registered in the endpoints manifest (e.g. "auth.internal" ->
-        "auth-service"). This is a deliberate, configured mapping, so
-        it's more trustworthy than a guess.
-      - Low: no explicit registry entry matched, but the URL happens to
-        contain the name of a known service as a substring (e.g. a call
-        to "https://auth-internal.example.com/verify" when we know about
-        an "auth-service"). This is a heuristic string match — cheap to
-        compute, easy to get wrong, so it's flagged Low rather than
-        Medium.
-
-    Returns (service_name, confidence) or (None, None) if nothing matched.
+    """Match a URL against known services -- see depatlas/resolution.py for
+    the two tiers (registry match = medium, hostname name match = low) and
+    the false-positive guards.
     """
     return resolve_endpoint(url, known_endpoints, known_services)
 
@@ -209,12 +197,16 @@ def parse_repo(
     edges: list[DependencyEdge] = []
     for py_file in iter_files(repo_path, "*.py"):
         try:
-            edges.extend(parse_file(py_file, known_services, known_endpoints))
+            found = parse_file(py_file, known_services, known_endpoints)
         except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
             # One unparseable file (Python 2, generated code, odd
             # encoding) must not abort the whole scan.
             warn_skipped(py_file, exc)
-    return edges
+            continue
+        for edge in found:
+            edge.source_file = relative_to_repo(edge.source_file, repo_path)
+        edges.extend(found)
+    return drop_self_edges(edges)
 
 
 def _param_info(arg: ast.arg) -> dict:
@@ -254,6 +246,8 @@ def _collect_public_functions(node: ast.AST, results: list[dict], prefix: str = 
             # inside it is a private implementation detail, not part of
             # the public interface.
         elif isinstance(child, ast.ClassDef):
+            if child.name.startswith("_"):
+                continue  # a private class's methods are not public API
             _collect_public_functions(child, results, f"{prefix}{child.name}.")
         # Other node types (If, For, etc.) aren't descended into either
         # -- we only care about what's directly reachable at module or
@@ -267,6 +261,8 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
     """
     signatures: list[PublicSignature] = []
     for py_file in iter_files(repo_path, "*.py"):
+        if is_test_path(py_file.relative_to(repo_path)):
+            continue  # tests are not the service's public interface
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
@@ -282,7 +278,7 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
                     service=self_service,
                     name=r["name"],
                     params=r["params"],
-                    source_file=str(py_file),
+                    source_file=relative_to_repo(py_file, repo_path),
                     source_line=r["line"],
                     qualname=f"{py_file.relative_to(repo_path).as_posix()}::{r['qualified']}",
                 )

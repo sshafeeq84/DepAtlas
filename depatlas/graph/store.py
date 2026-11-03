@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,8 +74,33 @@ class GraphStore:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._tx_depth = 0
         self._migrate()
         self._conn.commit()
+
+    def _commit(self) -> None:
+        """Commit now, unless inside `transaction()`, which commits once at the end."""
+        if self._tx_depth == 0:
+            self._conn.commit()
+
+    @contextmanager
+    def transaction(self):
+        """Group several writes so they commit together or not at all. A
+        scan writes services, edges and a snapshot; a crash between them used
+        to leave the database half-updated.
+        """
+        self._tx_depth += 1
+        try:
+            yield self
+        except BaseException:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self._conn.rollback()
+            raise
+        else:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self._conn.commit()
 
     def _migrate(self) -> None:
         """Lightweight, idempotent schema migrations for databases created
@@ -133,7 +159,7 @@ class GraphStore:
                     node.last_analysed_at,
                 ),
             )
-        self._conn.commit()
+        self._commit()
 
     def replace_edges_for_repo(self, repo_key: str, edges: list[DependencyEdge]) -> None:
         """Replace every edge belonging to one repo. `repo_key` is a stable
@@ -143,13 +169,18 @@ class GraphStore:
         and `_` in a path also acted as a wildcard).
 
         Rows written before the `repo` column existed have repo IS NULL;
-        those are cleaned up with an exact string-prefix check on the
-        path so old databases keep working.
+        those are matched on the path *plus a separator*, so scanning
+        /repos/pay cannot delete the old edges under /repos/payments/.
+
+        Placeholder services (repo == "") that no remaining edge refers to
+        are removed, so a dependency that was dropped stops showing up as an
+        orphaned, unowned service forever.
         """
+        n = len(repo_key) + 1
         self._conn.execute(
-            "DELETE FROM edges WHERE repo = ? "
-            "OR (repo IS NULL AND substr(source_file, 1, ?) = ?)",
-            (repo_key, len(repo_key), repo_key),
+            "DELETE FROM edges WHERE repo = ? OR (repo IS NULL AND "
+            "(substr(source_file, 1, ?) = ? OR substr(source_file, 1, ?) = ?))",
+            (repo_key, n, repo_key + "/", n, repo_key + "\\"),
         )
         for edge in edges:
             self._conn.execute(
@@ -169,7 +200,11 @@ class GraphStore:
                     repo_key,
                 ),
             )
-        self._conn.commit()
+        self._conn.execute(
+            "DELETE FROM services WHERE repo = '' AND id NOT IN "
+            "(SELECT source_service FROM edges UNION SELECT target_service FROM edges)"
+        )
+        self._commit()
 
     def all_services(self) -> list[dict]:
         rows = self._conn.execute("SELECT * FROM services ORDER BY id").fetchall()
@@ -208,7 +243,7 @@ class GraphStore:
             "INSERT INTO snapshots (repo, created_at, edges_json, signatures_json) VALUES (?, ?, ?, ?)",
             (repo, created_at, edges_json, signatures_json),
         )
-        self._conn.commit()
+        self._commit()
         return cursor.lastrowid
 
     def get_snapshot(self, snapshot_id: int) -> dict | None:

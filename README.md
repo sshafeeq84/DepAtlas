@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 137 passing tests. Two things are knowingly out
+export — all covered by 154 passing tests. Two things are knowingly out
 of scope for now; see [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -70,6 +70,14 @@ depatlas alerts
 
 # Export the whole graph:
 depatlas export --format dot --output graph.dot
+
+# A repo that mixes languages is still one service -- scan them together:
+depatlas scan --repo . --services services.json --language all
+#   (or repeat the option: --language java --language javascript)
+
+# Use it in CI: exit with status 1 if a high-severity alert is raised
+# (for example a BREAKING_CHANGE on a service others depend on):
+depatlas scan --repo . --services services.json --language all --fail-on high
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
@@ -237,18 +245,26 @@ tests had missed (a crash on modern Java syntax and undetected
 
 ## Known limitations
 
-A couple of things are deliberately out of scope for now, documented in
-the relevant module and in [`docs/CONTRIBUTING.md`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/CONTRIBUTING.md):
+Known gaps, documented in the relevant modules and in
+[`docs/CONTRIBUTING.md`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/CONTRIBUTING.md):
 
 - **Full TypeScript syntax** — `esprima` parses JavaScript, not
-  TypeScript-specific syntax (type annotations, interfaces). A `.ts`
-  file using real TS syntax is skipped with a warning, not crashed on.
-  Full support would need a Node-based parser, which this project
-  avoids as a runtime dependency.
-- **`boto3`/`grpc` detection** in the Python parser, and Java's
-  Maven/Gradle shared-library detection — spec'd, not yet built.
-- The **CodeCommit connector** is fully tested against a mocked AWS API
-  but has not been exercised against a real AWS account.
+  TypeScript-specific syntax (type annotations, interfaces). A `.ts` file
+  using real TS syntax is skipped with a warning, not crashed on. Moving
+  the JS/TS parser to `tree-sitter` (as Java already uses) would fix this.
+- **Python signature rules** — a parameter's kind (keyword-only, default
+  value, `*args`/`**kwargs`) is not modelled yet, so adding an optional
+  parameter can be flagged as breaking, and a keyword-argument rename is
+  not flagged.
+- **Dependents of a breaking change** — every dependent is counted, not
+  only those that import the changed code (HTTP callers depend on routes,
+  which are not extracted yet).
+- **Service manifest** — `--services` must be written by hand; inferring
+  module-to-service mappings is not built.
+- **Not built yet:** `boto3`/`grpc` call detection, Maven/Gradle
+  shared-library detection, and the `watch` and `init` commands.
+- The **CodeCommit connector** is tested against a mocked AWS API but has
+  not been exercised against a real AWS account.
 
 ## Running tests
 
