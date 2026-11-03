@@ -24,7 +24,7 @@ depatlas/
 ├── depatlas/
 │   ├── cli/            # CLI entry points (click)
 │   ├── connectors/      # GitHub, CodeCommit -- get code onto local disk
-│   ├── parsers/          # Language parsers (Python/ast, Java/javalang, JS-TS/esprima)
+│   ├── parsers/          # Language parsers (Python/ast, Java/tree-sitter, JS-TS/esprima)
 │   ├── graph/            # Data model, graph builder, SQLite store
 │   ├── ownership/        # CODEOWNERS + depatlas.yaml manifest resolution
 │   ├── intelligence/      # Diff engine, alerts

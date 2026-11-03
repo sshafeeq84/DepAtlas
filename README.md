@@ -33,12 +33,12 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 120 passing tests. Two things are knowingly out
+export — all covered by 124 passing tests. Two things are knowingly out
 of scope for now; see [Known limitations](#known-limitations).
 
 | Area | What's there |
 |---|---|
-| **Languages** | Python (`ast`), Java (`javalang`), JavaScript/TypeScript (`esprima`) |
+| **Languages** | Python (`ast`), Java (`tree-sitter`), JavaScript/TypeScript (`esprima`) |
 | **Code sources** | Local directory, GitHub (REST API), AWS CodeCommit (`boto3`) |
 | **Persistence** | SQLite-backed graph store; every scan saves an immutable snapshot |
 | **Ownership** | CODEOWNERS, with a `depatlas.yaml` manifest fallback |
@@ -115,7 +115,7 @@ detection.
 - **Python** (`ast`): `import`/`from...import` statements (high);
   `requests.get/post/etc.` calls resolved via an endpoint registry
   (medium) or name heuristic (low).
-- **Java** (`javalang`): `import` statements resolved against known
+- **Java** (`tree-sitter`): `import` statements resolved against known
   package namespaces (high); `@FeignClient` annotations, an explicit
   dependency declaration (high); RestTemplate/WebClient-style calls
   (medium/low, same scheme as Python).
@@ -220,6 +220,20 @@ depatlas diff --from 1 --to 2
 depatlas alerts --severity medium
 ```
 
+## Tried on a real project
+
+Run against the Java services of
+[Spring PetClinic Microservices](https://github.com/spring-petclinic/spring-petclinic-microservices)
+(one `depatlas scan` per service, with a small services/endpoints JSON):
+
+![PetClinic graph](https://raw.githubusercontent.com/sshafeeq84/DepAtlas/main/docs/images/petclinic_graph.png)
+
+DepAtlas found the API gateway's calls to the customers and visits
+services (Spring `WebClient`) and the GenAI service's call to the vets
+service. Running it on a real project also exposed bugs that the unit
+tests had missed (a crash on modern Java syntax and undetected
+`WebClient` calls), which are now fixed and covered by tests.
+
 ## Known limitations
 
 A couple of things are deliberately out of scope for now, documented in
@@ -248,7 +262,7 @@ depatlas/
 ├── depatlas/
 │   ├── cli/            # CLI entry point (click)
 │   ├── connectors/       # GitHub, AWS CodeCommit
-│   ├── parsers/          # python_parser (ast), java_parser (javalang),
+│   ├── parsers/          # python_parser (ast), java_parser (tree-sitter),
 │   │                       js_ts_parser (esprima)
 │   ├── graph/             # Models, graph builder, SQLite store
 │   ├── ownership/          # CODEOWNERS + depatlas.yaml manifest
