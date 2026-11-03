@@ -81,3 +81,13 @@ def test_same_dependency_different_line_counts_as_both_added_and_removed():
 
     assert len(diff["added"]) == 1
     assert len(diff["removed"]) == 1
+
+
+def test_moved_line_is_not_a_new_dependency_when_ignoring_location():
+    old = [{"source_service": "a", "target_service": "b", "type": "import",
+            "source_file": "x.py", "source_line": 3, "confidence": "high"}]
+    new = [{"source_service": "a", "target_service": "b", "type": "import",
+            "source_file": "x.py", "source_line": 9, "confidence": "high"}]
+
+    assert compute_diff(old, new)["added"] != []  # default still sees the move
+    assert compute_diff(old, new, by_location=False) == {"added": [], "removed": []}

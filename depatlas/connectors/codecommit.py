@@ -21,8 +21,19 @@ import os
 import shutil
 from pathlib import Path
 
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+from depatlas.gitinfo import write_sha
+
+try:  # boto3 is an optional extra: pip install "depatlas[aws]"
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # pragma: no cover - exercised via get_client's error
+    boto3 = None
+
+    class BotoCoreError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class ClientError(Exception):  # type: ignore[no-redef]
+        pass
 
 PROFILE_ENV_VAR = "DEPATLAS_AWS_PROFILE"
 
@@ -46,6 +57,11 @@ def get_client(region: str, profile_env: str = PROFILE_ENV_VAR):
     CLI, not by DepAtlas).
     """
     profile_name = os.environ.get(profile_env)
+    if boto3 is None:
+        raise CodeCommitConnectorError(
+            "AWS CodeCommit support needs boto3. Install it with: "
+            'pip install "depatlas[aws]"'
+        )
     session = boto3.Session(profile_name=profile_name) if profile_name else boto3.Session()
     return session.client("codecommit", region_name=region)
 
@@ -64,6 +80,8 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
         shutil.rmtree(extract_root)
     extract_root.mkdir(parents=True)
 
+    commit_ids: list[str] = []
+
     def _walk(folder_path: str) -> None:
         kwargs = {"repositoryName": repo_name, "folderPath": folder_path}
         if commit_specifier:
@@ -80,6 +98,9 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
             if code in ("FolderDoesNotExistException", "PathDoesNotExistException"):
                 return  # empty folder at this path; nothing more to walk
             raise CodeCommitConnectorError(f"CodeCommit API error ({code}): {exc}") from exc
+
+        if response.get("commitId"):
+            commit_ids.append(response["commitId"])
 
         for file_info in response.get("files", []):
             file_kwargs = {"repositoryName": repo_name, "filePath": file_info["absolutePath"]}
@@ -99,4 +120,6 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
     except (BotoCoreError,) as exc:
         raise CodeCommitConnectorError(f"Failed to reach AWS CodeCommit: {exc}") from exc
 
+    if commit_ids:
+        write_sha(extract_root, commit_ids[0])
     return extract_root

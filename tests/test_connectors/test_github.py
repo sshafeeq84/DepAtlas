@@ -100,4 +100,15 @@ def test_rescan_of_new_commit_leaves_one_stable_folder(tmp_path, monkeypatch):
 
     assert first == second
     assert (second / "charge.py").read_text() == "# bbb2222\n"
-    assert len([p for p in (tmp_path / "org__payments").iterdir()]) == 1
+    assert len([p for p in (tmp_path / "org__payments").iterdir() if p.is_dir()]) == 1
+
+
+def test_fetch_records_the_commit_sha(tmp_path, monkeypatch):
+    from depatlas.gitinfo import get_sha
+
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: _FakeResponse(200, content=_make_fake_zip_bytes())
+    )
+    result = fetch_repo("org", "payments", "t", tmp_path)
+
+    assert get_sha(result) == "abc1234"

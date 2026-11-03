@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 124 passing tests. Two things are knowingly out
+export — all covered by 137 passing tests. Two things are knowingly out
 of scope for now; see [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -132,7 +132,8 @@ Tests: `tests/test_parsers/`.
 - **`--github-repo owner/repo`** — downloaded via the GitHub REST API's
   zipball endpoint (no `git clone` dependency). Requires
   `DEPATLAS_GITHUB_TOKEN`.
-- **`--codecommit-repo <name>`** — downloaded via `boto3`, walking the
+- **`--codecommit-repo <name>`** — needs the optional AWS extra
+  (`pip install "depatlas[aws]"`); downloaded via `boto3`, walking the
   repo tree with `get_folder`/`get_file` (CodeCommit has no bulk-download
   endpoint). Uses the AWS profile in `DEPATLAS_AWS_PROFILE`, or the
   default credential chain.
