@@ -14,7 +14,7 @@ v1 scope (see SPEC.pdf 7.3): detect
      not a guess.
 
 Tool: the `esprima` library, a pure-Python ECMAScript parser that builds
-a real AST -- same rationale as Python's `ast` and Java's `javalang`:
+a real AST -- same rationale as Python's `ast` and Java's `tree-sitter`:
 source-code truth over regex guessing.
 
 Known limitation: esprima parses JavaScript (ES2017-ish), not
@@ -83,7 +83,7 @@ def _resolve_module(module_path: str, known_services: dict[str, str]) -> str | N
 def _walk(node, callback) -> None:
     """Recursively visit every esprima AST node, calling `callback` on
     each one. esprima doesn't ship a NodeVisitor helper the way Python's
-    `ast` or `javalang` do, so this is a small hand-rolled equivalent:
+    `ast` or `tree-sitter` do, so this is a small hand-rolled equivalent:
     every node's attributes are inspected, and any that are themselves
     Nodes (or lists of Nodes) are recursed into.
     """

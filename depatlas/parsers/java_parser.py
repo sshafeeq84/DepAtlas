@@ -7,30 +7,30 @@ v1 scope (see SPEC.pdf 7.2): detect
      direct service dependency declaration, so this is High confidence
      per SPEC.pdf 7.4's "Explicit annotation" row, no URL matching needed.
   3. RestTemplate/WebClient/HttpClient-style call sites (e.g.
-     `restTemplate.getForObject(url, ...)`), resolved against an
-     endpoints registry (medium confidence) or a heuristic name match
-     (low confidence) -- the same two-tier scheme the Python parser uses
-     for `requests.get/post/etc.`.
+     `restTemplate.getForObject(url, ...)`, `webClient.get().uri(url)`),
+     resolved against an endpoints registry (medium confidence) or a
+     heuristic name match (low confidence) -- the same two-tier scheme the
+     Python parser uses for `requests.get/post/etc.`.
 
-Tool: the `javalang` library, which builds a full Java AST (not a regex
-parse) -- same rationale as using Python's own `ast` module: source-code
-truth over pattern guessing.
+Tool: `tree-sitter` with the Java grammar. It builds a real syntax tree
+(not a regex parse), supports current Java (records, text blocks, `var`,
+switch expressions, ...) and is error-tolerant: a file with a syntax error
+still yields a partial tree, so one odd construct no longer hides every
+dependency in the file. (This replaced `javalang`, which stops at older
+Java syntax and skipped any file it could not fully parse.)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import javalang
-from javalang.parser import JavaParserError
-from javalang.tokenizer import LexerError
+import tree_sitter_java
+from tree_sitter import Language, Node, Parser
 
 from depatlas.fsutil import iter_files, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
 
-# javalang raises different exception types for bad tokens, bad syntax,
-# and (occasionally) an IndexError on truncated input.
-_JAVA_PARSE_ERRORS = (JavaParserError, LexerError, IndexError, UnicodeDecodeError)
+_PARSER = Parser(Language(tree_sitter_java.language()))
 
 # Common Spring RestTemplate / WebClient / generic HTTP-client method
 # names. This is intentionally a flat method-name allowlist rather than
@@ -45,7 +45,50 @@ HTTP_CLIENT_METHODS = {
     "post",
     "put",
     "delete",
+    # WebClient: webClient.get().uri("http://svc/...") -- the URL is the
+    # argument of .uri(), not of .get().
+    "uri",
 }
+
+
+def _text(node: Node) -> str:
+    return node.text.decode("utf-8", errors="replace")
+
+
+def _line(node: Node) -> int:
+    return node.start_point[0] + 1
+
+
+def _walk(node: Node):
+    """Every node in the tree, depth-first."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
+
+
+def _parse(file_path: Path) -> Node:
+    """Read and parse a file. tree-sitter never raises on bad syntax; it
+    returns a tree containing ERROR nodes, so whatever parsed cleanly is
+    still usable. Only an unreadable/non-UTF-8 file raises.
+    """
+    source = file_path.read_bytes()
+    source.decode("utf-8")  # raises UnicodeDecodeError for non-UTF-8 files
+    root = _PARSER.parse(source).root_node
+    if root.has_error:
+        warn_skipped_partial(file_path)
+    return root
+
+
+def warn_skipped_partial(file_path: Path) -> None:
+    import sys
+
+    print(
+        f"warning: {file_path} has syntax tree-sitter could not fully parse; "
+        "using the parts that parsed",
+        file=sys.stderr,
+    )
 
 
 def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services: dict[str, str]):
@@ -65,20 +108,82 @@ def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services:
     return None, None
 
 
-def _extract_string_literal(node) -> str | None:
-    """Pull a plain string out of a javalang Literal node's `.value`.
-
-    javalang keeps the surrounding quote characters in `.value` (e.g.
-    '"auth-service"'), so this strips them. Returns None for anything
-    that isn't a simple string literal (e.g. a variable reference) --
-    same limitation as the Python parser's URL extraction: no data-flow
-    tracing, just what's written directly in the call.
-    """
-    if not isinstance(node, javalang.tree.Literal):
+def _string_literal(node: Node | None) -> str | None:
+    """The contents of a plain Java string literal node, without quotes."""
+    if node is None or node.type != "string_literal":
         return None
-    value = node.value
-    if isinstance(value, str) and value.startswith('"') and value.endswith('"'):
+    value = _text(node)
+    if value.startswith('"""') and value.endswith('"""') and len(value) >= 6:
+        return value[3:-3]
+    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
         return value[1:-1]
+    return None
+
+
+def _string_fields(root: Node) -> dict[str, str]:
+    """Fields and local variables initialised with a plain string literal,
+    e.g. `private String hostname = "http://visits-service/";` -- so a call
+    like `.uri(hostname + "pets")` can still be resolved. Same-file only;
+    no cross-class data flow.
+    """
+    fields: dict[str, str] = {}
+    for node in _walk(root):
+        if node.type != "variable_declarator":
+            continue
+        name = node.child_by_field_name("name")
+        value = _string_literal(node.child_by_field_name("value"))
+        if name is not None and value is not None:
+            fields[_text(name)] = value
+    return fields
+
+
+def _url_text(node: Node | None, string_fields: dict[str, str]) -> str | None:
+    """Best-effort URL text for a call argument: a literal, a same-file
+    string field/variable, or a `+` concatenation of those. Unknown parts
+    are dropped; returns None when nothing readable remains.
+    """
+    if node is None:
+        return None
+    literal = _string_literal(node)
+    if literal is not None:
+        return literal
+    if node.type == "identifier":
+        return string_fields.get(_text(node))
+    if node.type == "parenthesized_expression" and node.named_children:
+        return _url_text(node.named_children[0], string_fields)
+    if node.type == "binary_expression":
+        operator = node.child_by_field_name("operator")
+        if operator is not None and _text(operator) == "+":
+            parts = [
+                _url_text(node.child_by_field_name("left"), string_fields),
+                _url_text(node.child_by_field_name("right"), string_fields),
+            ]
+            parts = [p for p in parts if p is not None]
+            return "".join(parts) if parts else None
+    return None
+
+
+def _import_path(node: Node) -> str:
+    """`import static a.b.C.*;` -> "a.b.C" (static keyword and wildcard dropped)."""
+    for child in node.named_children:
+        if child.type in ("scoped_identifier", "identifier"):
+            return _text(child)
+    return ""
+
+
+def _feign_target(annotation: Node) -> str | None:
+    """@FeignClient("name") or @FeignClient(name = "name" / value = "name")."""
+    args = annotation.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for child in args.named_children:
+        direct = _string_literal(child)
+        if direct is not None:
+            return direct
+        if child.type == "element_value_pair":
+            key = child.child_by_field_name("key")
+            if key is not None and _text(key) in ("name", "value"):
+                return _string_literal(child.child_by_field_name("value"))
     return None
 
 
@@ -92,95 +197,81 @@ def parse_file(
     known_endpoints = known_endpoints or {}
     source_service = known_services.get("__self__", "unknown-service")
 
-    source = file_path.read_text(encoding="utf-8")
-    tree = javalang.parse.parse(source)
-
+    root = _parse(file_path)
+    string_fields = _string_fields(root)
     edges: list[DependencyEdge] = []
 
-    # 1. Imports -- resolve against known internal package namespaces.
-    for imp in tree.imports:
-        # A package like "com.org.auth.AuthClient" resolves against a
-        # known namespace prefix like "com.org.auth" -- check every
-        # prefix of the dotted path, longest first, so the most specific
-        # registered namespace wins.
-        parts = imp.path.split(".")
-        target_service = None
-        for i in range(len(parts), 0, -1):
-            prefix = ".".join(parts[:i])
-            if prefix in known_services:
-                target_service = known_services[prefix]
-                break
-
-        if target_service is None:
-            continue
-
-        edges.append(
-            DependencyEdge(
-                source_service=source_service,
-                target_service=target_service,
-                type="import",
-                source_file=str(file_path),
-                source_line=imp.position.line if imp.position else 0,
-                confidence="high",
-            )
-        )
-
-    # 2. @FeignClient annotations -- explicit, direct dependency.
-    for _path, type_decl in tree.filter(javalang.tree.TypeDeclaration):
-        for ann in type_decl.annotations:
-            if ann.name != "FeignClient":
-                continue
-
+    for node in _walk(root):
+        # 1. Imports -- resolve against known internal package namespaces.
+        if node.type == "import_declaration":
+            # A package like "com.org.auth.AuthClient" resolves against a
+            # known namespace prefix like "com.org.auth" -- check every
+            # prefix of the dotted path, longest first, so the most
+            # specific registered namespace wins.
+            parts = _import_path(node).split(".")
             target_service = None
-            # Two shapes: @FeignClient("name") (a bare Literal) or
-            # @FeignClient(name = "name") (a list of ElementValuePair).
-            if isinstance(ann.element, javalang.tree.Literal):
-                target_service = _extract_string_literal(ann.element)
-            elif isinstance(ann.element, list):
-                for pair in ann.element:
-                    if pair.name in ("name", "value"):
-                        target_service = _extract_string_literal(pair.value)
-                        break
+            for i in range(len(parts), 0, -1):
+                prefix = ".".join(parts[:i])
+                if prefix in known_services:
+                    target_service = known_services[prefix]
+                    break
+            if target_service is not None:
+                edges.append(
+                    DependencyEdge(
+                        source_service=source_service,
+                        target_service=target_service,
+                        type="import",
+                        source_file=str(file_path),
+                        source_line=_line(node),
+                        confidence="high",
+                    )
+                )
 
+        # 2. @FeignClient annotations -- explicit, direct dependency.
+        elif node.type in ("annotation", "marker_annotation"):
+            name = node.child_by_field_name("name")
+            if name is None or _text(name).split(".")[-1] != "FeignClient":
+                continue
+            target = _feign_target(node)
+            if target is None:
+                continue
+            edges.append(
+                DependencyEdge(
+                    source_service=source_service,
+                    target_service=target,
+                    type="http_call",
+                    source_file=str(file_path),
+                    source_line=_line(node),
+                    confidence="high",
+                )
+            )
+
+        # 3. RestTemplate/WebClient/HttpClient-style call sites.
+        elif node.type == "method_invocation":
+            name = node.child_by_field_name("name")
+            args = node.child_by_field_name("arguments")
+            if name is None or args is None or _text(name) not in HTTP_CLIENT_METHODS:
+                continue
+            if not args.named_children:
+                continue
+            url = _url_text(args.named_children[0], string_fields)
+            if url is None:
+                continue
+            target_service, confidence = _resolve_endpoint(url, known_endpoints, known_services)
             if target_service is None:
                 continue
-
             edges.append(
                 DependencyEdge(
                     source_service=source_service,
                     target_service=target_service,
                     type="http_call",
                     source_file=str(file_path),
-                    source_line=ann.position.line if ann.position else 0,
-                    confidence="high",
+                    # The line of the method name, not of the whole
+                    # chained expression, which starts at the receiver.
+                    source_line=_line(name),
+                    confidence=confidence,
                 )
             )
-
-    # 3. RestTemplate/WebClient/HttpClient-style call sites.
-    for _path, call in tree.filter(javalang.tree.MethodInvocation):
-        if call.member not in HTTP_CLIENT_METHODS:
-            continue
-        if not call.arguments:
-            continue
-
-        url = _extract_string_literal(call.arguments[0])
-        if url is None:
-            continue
-
-        target_service, confidence = _resolve_endpoint(url, known_endpoints, known_services)
-        if target_service is None:
-            continue
-
-        edges.append(
-            DependencyEdge(
-                source_service=source_service,
-                target_service=target_service,
-                type="http_call",
-                source_file=str(file_path),
-                source_line=call.position.line if call.position else 0,
-                confidence=confidence,
-            )
-        )
 
     return edges
 
@@ -195,40 +286,81 @@ def parse_repo(
     for java_file in iter_files(repo_path, "*.java"):
         try:
             edges.extend(parse_file(java_file, known_services, known_endpoints))
-        except _JAVA_PARSE_ERRORS as exc:
+        except (UnicodeDecodeError, OSError) as exc:
             warn_skipped(java_file, exc)
     return edges
+
+
+def _type_name(node: Node | None) -> str | None:
+    """A parameter's base type name: generics and array dimensions are
+    dropped (`List<String>` -> "List", `int[]` -> "int"), matching what
+    earlier versions stored so existing snapshots keep comparing cleanly.
+    """
+    if node is None:
+        return None
+    if node.type == "generic_type":
+        for child in node.named_children:
+            if child.type in ("type_identifier", "scoped_type_identifier"):
+                return _text(child).split(".")[-1]
+    if node.type == "array_type":
+        return _type_name(node.child_by_field_name("element"))
+    return _text(node).split(".")[-1]
+
+
+def _is_public(method: Node) -> bool:
+    modifiers = next((c for c in method.children if c.type == "modifiers"), None)
+    words = set(_text(modifiers).split()) if modifiers is not None else set()
+    if "public" in words:
+        return True
+    # Interface methods are implicitly public unless marked private.
+    parent = method.parent
+    return parent is not None and parent.type == "interface_body" and "private" not in words
 
 
 def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
     """Extract every public method signature across a repo's .java
     files -- the data BREAKING_CHANGE alerting compares between scans
-    (SPEC.pdf section 10). "Public" here means javalang reports `public`
-    in the method's modifier set; unlike the Python parser's
-    underscore-prefix convention, Java has an explicit access modifier
-    to check instead of a naming convention. Unlike Python/JS, Java
-    always has a real static type for every parameter, so `type` here
-    is never None.
+    (SPEC.pdf section 10). Interface methods count as public even without
+    the keyword. Unlike Python/JS, Java always has a real static type for
+    every parameter, so `type` here is never None.
     """
     signatures: list[PublicSignature] = []
     for java_file in iter_files(repo_path, "*.java"):
         try:
-            source = java_file.read_text(encoding="utf-8")
-            tree = javalang.parse.parse(source)
-        except _JAVA_PARSE_ERRORS:
-            continue  # already warned about during the edge-parsing pass
+            root = _PARSER.parse(java_file.read_bytes()).root_node
+        except OSError:
+            continue
 
-        for _path, method in tree.filter(javalang.tree.MethodDeclaration):
-            if "public" not in method.modifiers:
+        for node in _walk(root):
+            if node.type != "method_declaration" or not _is_public(node):
                 continue
-
+            name = node.child_by_field_name("name")
+            params_node = node.child_by_field_name("parameters")
+            if name is None:
+                continue
+            params = []
+            for p in (params_node.named_children if params_node is not None else []):
+                if p.type not in ("formal_parameter", "spread_parameter"):
+                    continue
+                pname = p.child_by_field_name("name")
+                ptype = p.child_by_field_name("type")
+                if p.type == "spread_parameter":  # String... args
+                    ptype = next((c for c in p.named_children if c.type.endswith("type") or c.type == "type_identifier"), None)
+                    pname = next((c for c in p.named_children if c.type == "variable_declarator"), None)
+                    pname = pname.child_by_field_name("name") if pname is not None else None
+                params.append(
+                    {
+                        "name": _text(pname) if pname is not None else "",
+                        "type": _type_name(ptype),
+                    }
+                )
             signatures.append(
                 PublicSignature(
                     service=self_service,
-                    name=method.name,
-                    params=[{"name": p.name, "type": p.type.name} for p in method.parameters],
+                    name=_text(name),
+                    params=params,
                     source_file=str(java_file),
-                    source_line=method.position.line if method.position else 0,
+                    source_line=_line(name),
                 )
             )
 

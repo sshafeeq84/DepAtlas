@@ -103,3 +103,24 @@ def test_extract_signatures_finds_public_methods_only(tmp_path):
         {"name": "amount", "type": "int"},
     ]
     assert signatures[0].service == "payments-service"
+
+
+def test_webclient_uri_call_and_field_concatenation(tmp_path):
+    from depatlas.parsers.java_parser import parse_repo
+
+    (tmp_path / "Client.java").write_text(
+        """package x;
+class Client {
+    private String hostname = "http://visits-service/";
+    void a(){ web.get().uri("http://customers-service/owners/1").retrieve(); }
+    void b(){ web.get().uri(hostname + "pets").retrieve(); }
+}
+"""
+    )
+    edges = parse_repo(
+        tmp_path,
+        {"__self__": "gw"},
+        {"customers-service": "customers-service", "visits-service": "visits-service"},
+    )
+
+    assert sorted(e.target_service for e in edges) == ["customers-service", "visits-service"]
