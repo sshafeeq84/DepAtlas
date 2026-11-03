@@ -21,7 +21,7 @@ import os
 import shutil
 from pathlib import Path
 
-from depatlas.gitinfo import clear_sha, write_sha
+from depatlas.gitinfo import write_sha
 
 try:  # boto3 is an optional extra: pip install "depatlas[aws]"
     import boto3
@@ -79,7 +79,6 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
     if extract_root.exists():
         shutil.rmtree(extract_root)
     extract_root.mkdir(parents=True)
-    clear_sha(extract_root)
 
     commit_ids: list[str] = []
     # Every call after the first reads the same commit. Without pinning, a
@@ -104,9 +103,12 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
             raise CodeCommitConnectorError(f"CodeCommit API error ({code}): {exc}") from exc
 
         if response.get("commitId"):
-            commit_ids.append(response["commitId"])
-            if not pinned["id"]:
+            if not commit_ids:
+                # Pin to the commit id from the first response -- even if
+                # the caller passed a branch name, which would otherwise be
+                # re-resolved on every call (and move if someone pushes).
                 pinned["id"] = response["commitId"]
+            commit_ids.append(response["commitId"])
 
         for file_info in response.get("files", []):
             file_kwargs = {"repositoryName": repo_name, "filePath": file_info["absolutePath"]}
@@ -126,6 +128,5 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
     except (BotoCoreError,) as exc:
         raise CodeCommitConnectorError(f"Failed to reach AWS CodeCommit: {exc}") from exc
 
-    if commit_ids:
-        write_sha(extract_root, commit_ids[0])
+    write_sha(extract_root, commit_ids[0] if commit_ids else None)
     return extract_root

@@ -15,7 +15,9 @@ Guards against false edges:
   - Whole-word matching ("auth" does not match "oauth" or "author").
   - Longer service names are tried first (auth-admin before auth).
   - Very short or generic names (api, web, core, ...) are never guessed.
-  - Path-only URLs have no host, so they produce no guess.
+  - The low-confidence guess needs a real "scheme://host" URL. Relative
+    or scheme-less text such as fetch("orders/123") has no host, so it
+    produces no guess (an explicit registry entry is still honoured).
 """
 
 from __future__ import annotations
@@ -28,46 +30,37 @@ GENERIC_SLUGS = {"api", "web", "app", "core", "common", "service", "server", "cl
 
 
 def _host(url: str) -> str:
-    """The hostname part of a URL. Scheme-less text like "auth-service/verify"
-    is read as host/path; a leading "/" means there is no host.
-    """
-    if "://" in url:
-        return (urlparse(url).hostname or "").lower()
-    if url.startswith("/"):
+    """The hostname of an absolute URL; "" when there is no "scheme://"."""
+    if "://" not in url:
         return ""
-    return url.split("/")[0].split(":")[0].lower()
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def _registry_match(pattern: str, url: str) -> bool:
-    if pattern[:1].isalnum():
-        regex = rf"(?<![A-Za-z0-9.\-]){re.escape(pattern)}"
-    else:
-        regex = re.escape(pattern)
-    return re.search(regex, url) is not None
+    # Boundary checks on both sides when the pattern starts/ends with a
+    # name character: "auth.internal" must not match "myauth.internal" or
+    # "auth.internal.evil.com". Patterns starting/ending with "/" (paths)
+    # need no boundary on that side.
+    lead = r"(?<![A-Za-z0-9.\-])" if pattern[:1].isalnum() else ""
+    trail = r"(?![A-Za-z0-9.\-])" if pattern[-1:].isalnum() else ""
+    return re.search(lead + re.escape(pattern) + trail, url) is not None
 
 
 def resolve_endpoint(
     url: str,
     known_endpoints: dict[str, str],
     known_services: dict[str, str],
-    *,
-    require_url_shape: bool = False,
 ) -> tuple[str | None, str | None]:
-    """Returns (service_name, confidence), or (None, None) if nothing matched.
-
-    `require_url_shape` applies to the low-confidence guess only (it then
-    needs a real "scheme://" URL): an explicit endpoints-registry match is a
-    deliberate mapping, so it is trusted either way. Used for method names
-    that are too generic to mean "HTTP call" by themselves.
-    """
+    """Returns (service_name, confidence), or (None, None) if nothing matched."""
     self_service = known_services.get("__self__")
 
-    for pattern, service in known_endpoints.items():
+    # Longest pattern first, so "/api/payments" beats "/api".
+    for pattern, service in sorted(known_endpoints.items(), key=lambda kv: (-len(kv[0]), kv[0])):
         if service != self_service and _registry_match(pattern, url):
             return service, "medium"
-
-    if require_url_shape and "://" not in url:
-        return None, None
 
     host = _host(url)
     if not host:

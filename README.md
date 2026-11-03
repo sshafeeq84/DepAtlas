@@ -33,8 +33,8 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 154 passing tests. Two things are knowingly out
-of scope for now; see [Known limitations](#known-limitations).
+export — all covered by 173 passing tests. Some gaps are known and listed
+in [Known limitations](#known-limitations).
 
 | Area | What's there |
 |---|---|
@@ -73,11 +73,15 @@ depatlas export --format dot --output graph.dot
 
 # A repo that mixes languages is still one service -- scan them together:
 depatlas scan --repo . --services services.json --language all
-#   (or repeat the option: --language java --language javascript)
+#   (or repeat the option: --language java --language javascript;
+#    with no --language, languages are detected from file extensions)
 
-# Use it in CI: exit with status 1 if a high-severity alert is raised
-# (for example a BREAKING_CHANGE on a service others depend on):
-depatlas scan --repo . --services services.json --language all --fail-on high
+# Exit with status 3 if an alert at or above a severity is raised (status 1
+# means the tool itself failed). This needs a graph database that persists
+# between runs -- history for the diff-based alerts, and other repos' scans
+# for BREAKING_CHANGE dependents -- so it suits a shared or cached database,
+# not a fresh CI runner:
+depatlas scan --repo . --services services.json --fail-on high
 ```
 
 The `--services` file is a small JSON manifest mapping importable module
@@ -261,6 +265,18 @@ Known gaps, documented in the relevant modules and in
   which are not extracted yet).
 - **Service manifest** — `--services` must be written by hand; inferring
   module-to-service mappings is not built.
+- **CI mode** — `--fail-on` needs a persisted graph database. A
+  stateless `depatlas check --base origin/main` (scan the merge-base and
+  HEAD in one run, load dependents from an org-wide graph export) is
+  planned, not built.
+- **HTTP calls that name no service** — only the hostname of an absolute
+  URL is matched against service names. Calls routed through a gateway
+  (`https://api.company.com/payments/...`) or made through a base-URL
+  client (`webClient.uri("/owners")`) need `endpoints` entries in the
+  manifest.
+- **Test code** — edges found in test files are stored and tagged
+  (`from_test`) but ignored by alerts.
+
 - **Not built yet:** `boto3`/`grpc` call detection, Maven/Gradle
   shared-library detection, and the `watch` and `init` commands.
 - The **CodeCommit connector** is tested against a mocked AWS API but has

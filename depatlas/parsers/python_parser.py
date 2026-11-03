@@ -198,7 +198,7 @@ def parse_repo(
     for py_file in iter_files(repo_path, "*.py"):
         try:
             found = parse_file(py_file, known_services, known_endpoints)
-        except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+        except (SyntaxError, ValueError, UnicodeDecodeError, OSError) as exc:
             # One unparseable file (Python 2, generated code, odd
             # encoding) must not abort the whole scan.
             warn_skipped(py_file, exc)
@@ -266,7 +266,7 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
-        except (SyntaxError, ValueError, UnicodeDecodeError):
+        except (SyntaxError, ValueError, UnicodeDecodeError, OSError):
             continue  # already warned about during the edge-parsing pass
 
         results: list[dict] = []

@@ -70,9 +70,8 @@ relevant module's docstring and in the README:
 - **Full TypeScript syntax** — the JS/TS parser uses `esprima`, which
   parses JavaScript but not TypeScript-specific syntax (type
   annotations, interfaces). A `.ts` file using real TS syntax is
-  skipped with a warning, not crashed on. Full support would need a
-  Node-based parser (`@babel/parser` or the TS compiler API), which
-  this project avoids as a runtime dependency for now.
+  skipped with a warning, not crashed on. Moving the JS/TS parser to
+  `tree-sitter` (as Java already uses) would fix this.
 - **`boto3`/`grpc` detection in the Python parser**, and Java's
   Maven/Gradle shared-library detection — spec'd, not yet built.
 

@@ -295,6 +295,6 @@ def test_fail_on_exits_nonzero_only_when_an_alert_reaches_the_threshold(tmp_path
 
     # An unowned, orphaned service raises only LOW alerts.
     assert runner.invoke(cli, base + ["--fail-on", "high"]).exit_code == 0
-    assert runner.invoke(cli, base + ["--fail-on", "low"]).exit_code == 1
-    assert runner.invoke(cli, ["alerts", "--db", str(db), "--fail-on", "low"]).exit_code == 1
+    assert runner.invoke(cli, base + ["--fail-on", "low"]).exit_code == 3
+    assert runner.invoke(cli, ["alerts", "--db", str(db), "--fail-on", "low"]).exit_code == 3
     assert runner.invoke(cli, ["alerts", "--db", str(db), "--fail-on", "high"]).exit_code == 0

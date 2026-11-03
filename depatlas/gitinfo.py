@@ -11,21 +11,24 @@ def _sidecar(repo_dir: Path) -> Path:
 
 
 def write_sha(repo_dir: Path, sha: str | None) -> None:
-    """Remember the commit a connector fetched into `repo_dir` (stored next
-    to the folder, not inside it, so it is never scanned as source)."""
-    if sha:
-        _sidecar(repo_dir).write_text(sha, encoding="utf-8")
+    """Record the commit a connector fetched into `repo_dir`. Always writes
+    the sidecar (empty when the SHA is unknown): an empty sidecar means "no
+    SHA", which stops get_sha from falling back to `git rev-parse` inside
+    whatever git project happens to contain the cache folder -- that would
+    report the user's own project commit as the scanned repo's. The file sits
+    next to the folder, not inside it, so it is never scanned as source.
+    """
+    _sidecar(repo_dir).write_text(sha or "", encoding="utf-8")
 
 
 def clear_sha(repo_dir: Path) -> None:
-    """Forget any SHA recorded by an earlier fetch into `repo_dir`, so a
-    fetch that records none can never inherit the previous scan's."""
+    """Forget any SHA recorded by an earlier fetch into `repo_dir`."""
     _sidecar(repo_dir).unlink(missing_ok=True)
 
 
 def get_sha(repo_dir: Path) -> str | None:
-    """The commit SHA for a scanned repo: the one a connector recorded, else
-    `git rev-parse HEAD` for a local checkout, else None."""
+    """The commit SHA for a scanned repo: what a connector recorded (which
+    may be "none"), else `git rev-parse HEAD` for a local checkout, else None."""
     sidecar = _sidecar(repo_dir)
     if sidecar.exists():
         return sidecar.read_text(encoding="utf-8").strip() or None
