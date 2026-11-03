@@ -3,8 +3,8 @@
 v1 slice so far: `scan` (persists to a local SQLite graph store, with
 optional CODEOWNERS-based team resolution, against a local directory, a
 GitHub repo, or an AWS CodeCommit repo) and `query` (reads back from it,
-by service or by team). SPEC.md section 9 has the full planned command
-surface; `diff`, `watch`, `export`, `alerts`, `init` come later.
+by service or by team). SPEC.pdf section 9 has the full planned command
+surface; `watch` and `init` come later.
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ def cli() -> None:
     help=(
         "Path to a CODEOWNERS file. If supplied, the scanned service's "
         "team is resolved as the majority owner across its files "
-        "(SPEC.md section 8, priority 1)."
+        "(SPEC.pdf section 8, priority 1)."
     ),
 )
 @click.option(
@@ -162,7 +162,7 @@ def cli() -> None:
         "Path to a depatlas.yaml ownership manifest, mapping service "
         "names directly to teams. Used only when --codeowners is not "
         "supplied, or resolves no team for this repo "
-        "(SPEC.md section 8, priority 2)."
+        "(SPEC.pdf section 8, priority 2)."
     ),
 )
 @click.option(
@@ -185,9 +185,9 @@ def cli() -> None:
     "alerts_enabled",
     default=True,
     help=(
-        "Check for NEW_CROSS_TEAM_DEPENDENCY, ORPHANED_SERVICE, "
-        "UNOWNED_SERVICE, and HIGH_FAN_IN after this scan and print any "
-        "that trigger (SPEC.md section 10). On by default."
+        "Check for NEW_CROSS_TEAM_DEPENDENCY, BREAKING_CHANGE, "
+        "ORPHANED_SERVICE, UNOWNED_SERVICE, and HIGH_FAN_IN after this scan and print any "
+        "that trigger (SPEC.pdf section 10). On by default."
     ),
 )
 @click.option(
@@ -221,6 +221,8 @@ def scan(
     if len(sources_given) > 1:
         raise click.UsageError("Provide only one of --repo, --github-repo, or --codecommit-repo.")
 
+    repo_key: str | None = None  # stable identity for this repo across scans
+
     if github_repo:
         if "/" not in github_repo:
             raise click.UsageError("--github-repo must be in 'owner/repo' form.")
@@ -229,6 +231,7 @@ def scan(
             token = get_token()
             click.echo(f"Downloading {github_repo}@{ref} from GitHub...", err=True)
             repo_path = fetch_github_repo(owner, repo_name, token, cache_dir, ref)
+            repo_key = f"github:{github_repo}"
         except GitHubConnectorError as exc:
             raise click.ClickException(str(exc))
 
@@ -238,6 +241,7 @@ def scan(
             click.echo(f"Downloading {codecommit_repo} from AWS CodeCommit ({region})...", err=True)
             commit_specifier = ref if ref != "HEAD" else ""
             repo_path = fetch_codecommit_repo(codecommit_repo, client, cache_dir, commit_specifier)
+            repo_key = f"codecommit:{codecommit_repo}"
         except CodeCommitConnectorError as exc:
             raise click.ClickException(str(exc))
 
@@ -247,6 +251,8 @@ def scan(
     # absolute "--repo /full/path/to/repo" must resolve to the same
     # value, or repeat scans and `diff --last` silently stop matching up.
     repo_path = repo_path.resolve()
+    if repo_key is None:
+        repo_key = str(repo_path)
 
     manifest = json.loads(services_path.read_text(encoding="utf-8"))
     known_endpoints = manifest.pop("endpoints", {})
@@ -274,8 +280,8 @@ def scan(
 
     store = GraphStore(db_path)
     store.upsert_services(nodes)
-    store.replace_edges_for_repo(str(repo_path), edges)
-    snapshot_id = store.save_snapshot(str(repo_path), edges, signatures=signatures)
+    store.replace_edges_for_repo(repo_key, edges)
+    snapshot_id = store.save_snapshot(repo_key, edges, signatures=signatures)
 
     triggered_alerts = []
     if alerts_enabled:
@@ -284,7 +290,7 @@ def scan(
         # NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE both need a diff
         # -- only possible once this repo has at least two snapshots to
         # compare.
-        recent = store.list_snapshots(repo=str(repo_path), limit=2)
+        recent = store.list_snapshots(repo=repo_key, limit=2)
         if len(recent) == 2:
             old_snapshot = store.get_snapshot(recent[1]["id"])
             new_snapshot = store.get_snapshot(recent[0]["id"])
@@ -552,7 +558,7 @@ def diff(
     help="Path to the SQLite graph store.",
 )
 def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) -> None:
-    """Check the whole stored graph for all five SPEC.md section 10
+    """Check the whole stored graph for all five SPEC.pdf section 10
     alert types: NEW_CROSS_TEAM_DEPENDENCY, HIGH_FAN_IN, ORPHANED_SERVICE,
     UNOWNED_SERVICE, and BREAKING_CHANGE.
     """
@@ -629,7 +635,7 @@ def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) ->
     help="Path to the SQLite graph store.",
 )
 def export(export_format: str, output_path: Path, db_path: Path) -> None:
-    """Export the whole persisted graph as JSON or DOT (SPEC.md section 9).
+    """Export the whole persisted graph as JSON or DOT (SPEC.pdf section 9).
 
     Unlike `scan --output`, which writes just that one scan's edges,
     this exports every service and edge currently in the store, across

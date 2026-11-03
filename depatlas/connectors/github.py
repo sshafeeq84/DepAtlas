@@ -1,10 +1,10 @@
-"""GitHub connector (SPEC.md section 4.1, "Code store connectors": GitHub).
+"""GitHub connector (SPEC.pdf section 4.1, "Code store connectors": GitHub).
 
 Downloads a repository's contents via the GitHub REST API's zipball
 endpoint and extracts them into a local cache directory, so the existing
 language parsers can run against the result unchanged -- this connector's
 only job is "get the code onto disk," matching the "Repository Fetcher
-(clone / stream / cache layer)" box in SPEC.md's architecture diagram.
+(clone / stream / cache layer)" box in SPEC.pdf's architecture diagram.
 
 Deliberately uses the REST API + zip download rather than shelling out to
 `git clone`, so this project has no dependency on git being installed or
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -38,9 +39,9 @@ def _auth_headers(token: str) -> dict:
 
 
 def get_token() -> str:
-    """Read the GitHub token from the environment (SPEC.md section 9's
+    """Read the GitHub token from the environment (SPEC.pdf section 9's
     config convention: token_env: DEPATLAS_GITHUB_TOKEN). Never accepts
-    a token as a CLI argument or writes one to disk (SPEC.md section 12:
+    a token as a CLI argument or writes one to disk (SPEC.pdf section 12:
     "Auth credential storage: Environment variables only -- never
     written to disk").
     """
@@ -59,7 +60,7 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
 
     Re-downloads and overwrites the cached copy on every call -- there's
     no partial-update/diff logic here, matching the "one-time setup,
-    always current" spirit from SPEC.md's vision: each scan should
+    always current" spirit from SPEC.pdf's vision: each scan should
     reflect the current remote state, not a possibly-stale local cache.
     """
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/zipball/{ref}"
@@ -79,6 +80,12 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
         )
 
     extract_root = Path(cache_dir) / f"{owner}__{repo}"
+    # Start from an empty folder every time. GitHub's wrapper folder is
+    # named after the commit SHA, so without this each new commit would
+    # leave an extra sibling folder behind -- and scans of different
+    # commits would get different paths, which silently breaks diffs.
+    if extract_root.exists():
+        shutil.rmtree(extract_root)
     extract_root.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
@@ -89,5 +96,11 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
     # callers get the actual repo root, not the wrapper folder.
     inner_dirs = [p for p in extract_root.iterdir() if p.is_dir()]
     if len(inner_dirs) == 1:
-        return inner_dirs[0]
+        # Rename the SHA-named wrapper to a stable name so the same repo
+        # always has the same path across commits (edge identity in the
+        # diff engine includes the file path).
+        stable = extract_root / repo
+        if inner_dirs[0] != stable:
+            inner_dirs[0].rename(stable)
+        return stable
     return extract_root

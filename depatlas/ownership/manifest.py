@@ -1,4 +1,4 @@
-"""depatlas.yaml ownership manifest (SPEC.md section 8, priority 2:
+"""depatlas.yaml ownership manifest (SPEC.pdf section 8, priority 2:
 "depatlas.yaml manifest — explicit service-to-team mapping, for repos
 without CODEOWNERS").
 
@@ -8,7 +8,7 @@ majority vote to name a single team for a service. A depatlas.yaml
 manifest instead states the team directly, one service name -> one team,
 so there's nothing to infer -- just a lookup.
 
-Expected shape (SPEC.md section 8's example):
+Expected shape (SPEC.pdf section 8's example):
 
     version: 1
     services:

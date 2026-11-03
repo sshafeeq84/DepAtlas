@@ -1,4 +1,4 @@
-"""SQLite graph store (SPEC.md section 5, "Graph Builder" -> "Persists to
+"""SQLite graph store (SPEC.pdf section 5, "Graph Builder" -> "Persists to
 local graph store (SQLite default)", and section 12's non-functional
 requirement that storage default to SQLite).
 
@@ -15,10 +15,10 @@ Upsert model:
     exactly, instead of accumulating stale edges from files that have
     since changed or been deleted.
 
-Snapshots (SPEC.md section 5, "Graph Builder" -> "Versions graph per
+Snapshots (SPEC.pdf section 5, "Graph Builder" -> "Versions graph per
 commit SHA", and section 6.3's GraphSnapshot shape) are additive, not
 replaced: every `scan` appends a new snapshot row containing that scan's
-full edge set as JSON, so the diff engine (SPEC.md's Intelligence Layer)
+full edge set as JSON, so the diff engine (SPEC.pdf's Intelligence Layer)
 has a timeline to compare against. Unlike the `edges` table (which always
 reflects only the *current* state), snapshots accumulate on purpose.
 """
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS edges (
     source_file TEXT NOT NULL,
     source_line INTEGER NOT NULL,
     confidence TEXT NOT NULL,
-    detected_at_sha TEXT
+    detected_at_sha TEXT,
+    repo TEXT
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -85,6 +86,14 @@ class GraphStore:
         existing_columns = {
             row[1] for row in self._conn.execute("PRAGMA table_info(snapshots)").fetchall()
         }
+        edge_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(edges)").fetchall()
+        }
+        if "repo" not in edge_columns:
+            self._conn.execute("ALTER TABLE edges ADD COLUMN repo TEXT")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_service)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_service)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_repo ON edges(repo)")
         if "signatures_json" not in existing_columns:
             self._conn.execute(
                 "ALTER TABLE snapshots ADD COLUMN signatures_json TEXT NOT NULL DEFAULT '[]'"
@@ -126,17 +135,28 @@ class GraphStore:
             )
         self._conn.commit()
 
-    def replace_edges_for_repo(self, repo_path: str, edges: list[DependencyEdge]) -> None:
+    def replace_edges_for_repo(self, repo_key: str, edges: list[DependencyEdge]) -> None:
+        """Replace every edge belonging to one repo. `repo_key` is a stable
+        identifier for the repo (e.g. "github:owner/name" or its resolved
+        local path) -- matched exactly, so scanning /repos/pay can never
+        delete /repos/payments' edges (the old LIKE-prefix delete could,
+        and `_` in a path also acted as a wildcard).
+
+        Rows written before the `repo` column existed have repo IS NULL;
+        those are cleaned up with an exact string-prefix check on the
+        path so old databases keep working.
+        """
         self._conn.execute(
-            "DELETE FROM edges WHERE source_file LIKE ?",
-            (f"{repo_path}%",),
+            "DELETE FROM edges WHERE repo = ? "
+            "OR (repo IS NULL AND substr(source_file, 1, ?) = ?)",
+            (repo_key, len(repo_key), repo_key),
         )
         for edge in edges:
             self._conn.execute(
                 """
                 INSERT INTO edges
-                    (source_service, target_service, type, source_file, source_line, confidence, detected_at_sha)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (source_service, target_service, type, source_file, source_line, confidence, detected_at_sha, repo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     edge.source_service,
@@ -146,6 +166,7 @@ class GraphStore:
                     edge.source_line,
                     edge.confidence,
                     edge.detected_at_sha,
+                    repo_key,
                 ),
             )
         self._conn.commit()

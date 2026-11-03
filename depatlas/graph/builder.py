@@ -1,4 +1,4 @@
-"""Graph builder (SPEC.md section 5, "Graph Builder" box).
+"""Graph builder (SPEC.pdf section 5, "Graph Builder" box).
 
 Takes the flat DependencyEdge stream a parser produces and resolves it
 into ServiceNode objects -- the "service identity resolution" and
@@ -18,7 +18,7 @@ scanning payments-service today creates a stub node for auth-service;
 scanning auth-service's own repo tomorrow fills that stub in with real
 data via the same service name, rather than creating a duplicate.
 
-Team resolution (SPEC.md section 8) follows the spec's priority order:
+Team resolution (SPEC.pdf section 8) follows the spec's priority order:
   1. CODEOWNERS -- resolving an owner for every file in the repo
      individually (not just one language's files -- ownership isn't
      language-specific), then taking the most common owner as the
@@ -28,7 +28,7 @@ Team resolution (SPEC.md section 8) follows the spec's priority order:
   2. depatlas.yaml manifest -- an explicit {service_name: team} lookup,
      used only when CODEOWNERS wasn't supplied or didn't resolve a team.
   3. Unowned -- if neither source names a team, `ServiceNode.team` stays
-     None, matching SPEC.md 8's "Fallback -- unowned; flagged in output."
+     None, matching SPEC.pdf 8's "Fallback -- unowned; flagged in output."
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from depatlas.fsutil import iter_files
 from depatlas.graph.models import DependencyEdge, ServiceNode
 from depatlas.ownership.codeowners import OwnershipRule, resolve_owner
 
@@ -49,9 +50,7 @@ def _resolve_team(
 ) -> str | None:
     if codeowners_rules:
         owners_found = []
-        for file_path in repo_path.rglob("*"):
-            if not file_path.is_file():
-                continue
+        for file_path in iter_files(repo_path):
             owner = resolve_owner(str(file_path), repo_path, codeowners_rules)
             if owner is not None:
                 owners_found.append(owner)
@@ -65,7 +64,7 @@ def _resolve_team(
     if manifest_teams and self_service in manifest_teams:
         return manifest_teams[self_service]
 
-    return None  # SPEC.md 8, priority 3: unowned; flagged in output
+    return None  # SPEC.pdf 8, priority 3: unowned; flagged in output
 
 
 def build_graph(
@@ -108,7 +107,7 @@ def build_graph(
             # unknown. CODEOWNERS can't resolve a team for it (there's no
             # file tree to check), but the manifest is a flat name->team
             # lookup that doesn't require having scanned the service's
-            # own repo -- SPEC.md's own depatlas.yaml example lists every
+            # own repo -- SPEC.pdf's own depatlas.yaml example lists every
             # service org-wide, not just the one being scanned, so it
             # should resolve here too.
             placeholder_team = manifest_teams.get(name) if manifest_teams else None

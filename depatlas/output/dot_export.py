@@ -1,4 +1,4 @@
-"""DOT (Graphviz) export (SPEC.md section 4.1, "Graph output": JSON, DOT
+"""DOT (Graphviz) export (SPEC.pdf section 4.1, "Graph output": JSON, DOT
 format; and section 9's `depatlas export --format dot`).
 
 Produces a directed graph in Graphviz's DOT language: one node per
