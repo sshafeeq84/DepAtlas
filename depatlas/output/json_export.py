@@ -1,4 +1,4 @@
-"""Serialize DependencyEdges to JSON (SPEC.md section 4.1, Graph output)."""
+"""Serialize DependencyEdges to JSON (SPEC.pdf section 4.1, Graph output)."""
 
 from __future__ import annotations
 

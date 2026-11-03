@@ -51,7 +51,7 @@ def test_fetch_repo_extracts_zip_and_resolves_inner_dir(tmp_path, monkeypatch):
 
     result = fetch_repo("org", "payments", "fake-token", tmp_path)
 
-    assert result.name == "payments-abc1234"
+    assert result.name == "payments"  # SHA-named wrapper renamed to a stable name
     assert (result / "charge.py").exists()
     assert (result / "charge.py").read_text() == "import auth_client\n"
 
@@ -78,3 +78,26 @@ def test_fetch_repo_raises_on_network_error(tmp_path, monkeypatch):
 
     with pytest.raises(GitHubConnectorError, match="Failed to reach"):
         fetch_repo("org", "payments", "fake-token", tmp_path)
+
+
+def test_rescan_of_new_commit_leaves_one_stable_folder(tmp_path, monkeypatch):
+    """Regression: a second scan (new commit SHA) used to leave the old
+    SHA folder behind and return a different path, which broke diffs."""
+
+    def zip_for(sha: str) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr(f"payments-{sha}/charge.py", f"# {sha}\n")
+        return buffer.getvalue()
+
+    shas = iter(["aaa1111", "bbb2222"])
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: _FakeResponse(200, content=zip_for(next(shas)))
+    )
+
+    first = fetch_repo("org", "payments", "t", tmp_path)
+    second = fetch_repo("org", "payments", "t", tmp_path)
+
+    assert first == second
+    assert (second / "charge.py").read_text() == "# bbb2222\n"
+    assert len([p for p in (tmp_path / "org__payments").iterdir()]) == 1

@@ -1,6 +1,6 @@
 """JavaScript / TypeScript dependency parser.
 
-v1 scope (see SPEC.md 7.3): detect
+v1 scope (see SPEC.pdf 7.3): detect
   1. `import` / `require(...)` statements, resolved against a known
      internal package namespace list (same idea as the Python and Java
      parsers' import detection).
@@ -38,6 +38,7 @@ from pathlib import Path
 import esprima
 from esprima.nodes import Node
 
+from depatlas.fsutil import iter_files
 from depatlas.graph.models import DependencyEdge, PublicSignature
 
 HTTP_CLIENT_OBJECTS = {"axios", "got"}
@@ -218,7 +219,7 @@ def parse_package_json(
     self_service: str | None = None,
 ) -> list[DependencyEdge]:
     """Parse a package.json's dependencies/devDependencies into
-    shared_library edges (SPEC.md 7.3's "package.json dependencies --
+    shared_library edges (SPEC.pdf 7.3's "package.json dependencies --
     shared library map").
     """
     known_services = known_services or {}
@@ -257,7 +258,7 @@ def parse_repo(
     edges: list[DependencyEdge] = []
 
     for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
-        for source_file in repo_path.rglob(pattern):
+        for source_file in iter_files(repo_path, pattern):
             edges.extend(parse_file(source_file, known_services, known_endpoints))
 
     package_json = repo_path / "package.json"
@@ -324,10 +325,10 @@ def _extract_signatures_from_file(file_path: Path, self_service: str) -> list[Pu
 def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
     """Extract every exported function signature across a repo's
     .js/.jsx/.ts/.tsx files -- the data BREAKING_CHANGE alerting compares
-    between scans (SPEC.md section 10).
+    between scans (SPEC.pdf section 10).
     """
     signatures: list[PublicSignature] = []
     for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
-        for source_file in repo_path.rglob(pattern):
+        for source_file in iter_files(repo_path, pattern):
             signatures.extend(_extract_signatures_from_file(source_file, self_service))
     return signatures

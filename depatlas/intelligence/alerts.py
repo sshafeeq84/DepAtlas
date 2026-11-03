@@ -1,4 +1,4 @@
-"""Alert system (SPEC.md section 10, "Alert Definitions").
+"""Alert system (SPEC.pdf section 10, "Alert Definitions").
 
 All five alert types are now implemented:
 
@@ -6,7 +6,7 @@ All five alert types are now implemented:
     whose source and target services have different, both-resolved
     teams.
   - HIGH_FAN_IN (Medium): a service's upstream (dependent) count meets
-    or exceeds a configurable threshold (default 10, per SPEC.md's
+    or exceeds a configurable threshold (default 10, per SPEC.pdf's
     alert table).
   - ORPHANED_SERVICE (Low): a service has zero edges in either
     direction -- no dependents, no dependencies.
@@ -15,7 +15,7 @@ All five alert types are now implemented:
     removed, or an existing function's parameter list changed in a way
     that would break callers, between two scans -- and the service has
     at least one known dependent. Built on each language parser's
-    `extract_signatures()` (SPEC.md's trigger explicitly says "with
+    `extract_signatures()` (SPEC.pdf's trigger explicitly says "with
     known dependents," so a signature change on a service nobody calls
     doesn't trigger this).
 
@@ -190,7 +190,7 @@ def check_breaking_changes(
 ) -> list[Alert]:
     """Flag a public function that was removed, or whose parameter list
     changed in a way that breaks callers, between two scans of `service`
-    -- but only if the service has at least one known dependent (SPEC.md's
+    -- but only if the service has at least one known dependent (SPEC.pdf's
     trigger explicitly says "with known dependents"; a signature change
     on a service nobody calls isn't breaking anything).
 

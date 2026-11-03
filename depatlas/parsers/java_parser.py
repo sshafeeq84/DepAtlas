@@ -1,11 +1,11 @@
 """Java dependency parser.
 
-v1 scope (see SPEC.md 7.2): detect
+v1 scope (see SPEC.pdf 7.2): detect
   1. `import` statements, resolved against a known internal package
      namespace list (same idea as the Python parser's import detection).
   2. `@FeignClient` annotations on a class/interface -- an explicit,
      direct service dependency declaration, so this is High confidence
-     per SPEC.md 7.4's "Explicit annotation" row, no URL matching needed.
+     per SPEC.pdf 7.4's "Explicit annotation" row, no URL matching needed.
   3. RestTemplate/WebClient/HttpClient-style call sites (e.g.
      `restTemplate.getForObject(url, ...)`), resolved against an
      endpoints registry (medium confidence) or a heuristic name match
@@ -22,8 +22,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import javalang
+from javalang.parser import JavaParserError
+from javalang.tokenizer import LexerError
 
+from depatlas.fsutil import iter_files, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
+
+# javalang raises different exception types for bad tokens, bad syntax,
+# and (occasionally) an IndexError on truncated input.
+_JAVA_PARSE_ERRORS = (JavaParserError, LexerError, IndexError, UnicodeDecodeError)
 
 # Common Spring RestTemplate / WebClient / generic HTTP-client method
 # names. This is intentionally a flat method-name allowlist rather than
@@ -185,15 +192,18 @@ def parse_repo(
 ) -> list[DependencyEdge]:
     """Walk a repo directory and parse every .java file in it."""
     edges: list[DependencyEdge] = []
-    for java_file in repo_path.rglob("*.java"):
-        edges.extend(parse_file(java_file, known_services, known_endpoints))
+    for java_file in iter_files(repo_path, "*.java"):
+        try:
+            edges.extend(parse_file(java_file, known_services, known_endpoints))
+        except _JAVA_PARSE_ERRORS as exc:
+            warn_skipped(java_file, exc)
     return edges
 
 
 def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
     """Extract every public method signature across a repo's .java
     files -- the data BREAKING_CHANGE alerting compares between scans
-    (SPEC.md section 10). "Public" here means javalang reports `public`
+    (SPEC.pdf section 10). "Public" here means javalang reports `public`
     in the method's modifier set; unlike the Python parser's
     underscore-prefix convention, Java has an explicit access modifier
     to check instead of a naming convention. Unlike Python/JS, Java
@@ -201,9 +211,12 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
     is never None.
     """
     signatures: list[PublicSignature] = []
-    for java_file in repo_path.rglob("*.java"):
-        source = java_file.read_text(encoding="utf-8")
-        tree = javalang.parse.parse(source)
+    for java_file in iter_files(repo_path, "*.java"):
+        try:
+            source = java_file.read_text(encoding="utf-8")
+            tree = javalang.parse.parse(source)
+        except _JAVA_PARSE_ERRORS:
+            continue  # already warned about during the edge-parsing pass
 
         for _path, method in tree.filter(javalang.tree.MethodDeclaration):
             if "public" not in method.modifiers:

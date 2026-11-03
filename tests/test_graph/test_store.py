@@ -198,3 +198,47 @@ def test_existing_database_without_signatures_column_gets_migrated(tmp_path):
     store.close()
 
     assert snapshot["signatures"] == []  # migrated column defaults to '[]'
+
+
+def test_rescan_does_not_delete_a_sibling_repo_with_a_shared_prefix(store):
+    # Regression: DELETE ... LIKE '/repos/pay%' used to wipe /repos/payments too.
+    store.replace_edges_for_repo(
+        "/repos/payments", [_edge("payments-service", "auth-service", "/repos/payments/a.py")]
+    )
+    store.replace_edges_for_repo("/repos/pay", [])
+
+    assert len(store.edges_for_service("payments-service", direction="downstream")) == 1
+
+
+def test_underscore_in_repo_key_is_not_a_wildcard(store):
+    store.replace_edges_for_repo(
+        "/repos/sampleXrepo", [_edge("a-service", "b-service", "/repos/sampleXrepo/a.py")]
+    )
+    store.replace_edges_for_repo("/repos/sample_repo", [])
+
+    assert len(store.edges_for_service("a-service", direction="downstream")) == 1
+
+
+def test_legacy_edges_without_repo_column_still_migrate_and_get_replaced(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE edges (
+            source_service TEXT NOT NULL, target_service TEXT NOT NULL,
+            type TEXT NOT NULL, source_file TEXT NOT NULL,
+            source_line INTEGER NOT NULL, confidence TEXT NOT NULL,
+            detected_at_sha TEXT
+        );
+        INSERT INTO edges VALUES ('p','a','import','/repos/payments/x.py',1,'high',NULL);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    s = GraphStore(db)  # must add the repo column without error
+    s.replace_edges_for_repo("/repos/payments", [])
+    assert s.edges_for_service("p", direction="downstream") == []
+    s.close()

@@ -1,4 +1,4 @@
-"""CODEOWNERS ownership mapping (SPEC.md section 8, priority 1).
+"""CODEOWNERS ownership mapping (SPEC.pdf section 8, priority 1).
 
 GitHub's CODEOWNERS format is a list of lines, each either a comment
 (starting with `#`), blank, or a rule: a gitignore-style path pattern

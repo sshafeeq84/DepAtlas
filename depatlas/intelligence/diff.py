@@ -1,4 +1,4 @@
-"""Diff engine (SPEC.md section 5, Intelligence Layer: "Diff engine:
+"""Diff engine (SPEC.pdf section 5, Intelligence Layer: "Diff engine:
 compares graph versions").
 
 Compares two snapshots' edge sets and reports which dependencies were

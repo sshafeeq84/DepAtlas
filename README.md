@@ -29,11 +29,11 @@ Full original design in [`docs/SPEC.pdf`](https://github.com/sshafeeq84/DepAtlas
 
 ## Status
 
-Feature-complete relative to the v1 spec. Three language parsers, three
+v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 113 passing tests. Two things are knowingly out
+export — all covered by 120 passing tests. Two things are knowingly out
 of scope for now; see [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -162,7 +162,7 @@ Tests: `tests/test_ownership/`.
 
 ### Alerts
 
-All five SPEC.md alert types, checked automatically after every `scan`
+All five SPEC.pdf alert types, checked automatically after every `scan`
 (`--no-alerts` to disable) or on demand via `depatlas alerts`:
 
 - **`BREAKING_CHANGE`** (high) — a public function removed, its

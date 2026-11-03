@@ -1,4 +1,4 @@
-"""AWS CodeCommit connector (SPEC.md section 4.1, "Code store connectors":
+"""AWS CodeCommit connector (SPEC.pdf section 4.1, "Code store connectors":
 AWS CodeCommit).
 
 Unlike the GitHub connector (a single zip download), CodeCommit's API has
@@ -33,14 +33,14 @@ class CodeCommitConnectorError(Exception):
 
 def get_client(region: str, profile_env: str = PROFILE_ENV_VAR):
     """Build a boto3 CodeCommit client using an AWS profile named by the
-    environment variable `profile_env` (SPEC.md section 9's config
+    environment variable `profile_env` (SPEC.pdf section 9's config
     convention: profile_env: DEPATLAS_AWS_PROFILE). Falls back to boto3's
     normal default credential chain if the env var isn't set, so this
     also works in environments using instance roles, SSO, etc.
 
     Never accepts an access key or secret directly -- credentials always
     come from the AWS credentials file / environment / role, matching
-    SPEC.md section 12's "Auth credential storage: Environment variables
+    SPEC.pdf section 12's "Auth credential storage: Environment variables
     only -- never written to disk" (the profile *name* is not a secret;
     the actual keys live in the AWS credentials file, managed by the AWS
     CLI, not by DepAtlas).

@@ -1,6 +1,6 @@
 """Core data model for DepAtlas.
 
-These mirror the shapes defined in SPEC.md section 6. Keeping them as
+These mirror the shapes defined in SPEC.pdf section 6. Keeping them as
 simple dataclasses (rather than a heavier ORM model) makes them trivial
 to serialize to JSON and easy to reason about while the parser layer is
 still evolving.
@@ -55,7 +55,7 @@ class PublicSignature:
     it describes a fact about the service's *own* interface ("this
     service exposes a function named X taking params [a, b]"), not a
     relationship to another service. Used by the BREAKING_CHANGE alert
-    (SPEC.md section 10) to compare a service's public interface across
+    (SPEC.pdf section 10) to compare a service's public interface across
     two scans.
 
     `params` is a list of {"name": str, "type": str | None} dicts, one

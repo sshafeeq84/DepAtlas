@@ -1,6 +1,6 @@
 """Python dependency parser.
 
-v1 scope (see SPEC.md 7.1): detect
+v1 scope (see SPEC.pdf 7.1): detect
   1. `import` / `from X import Y` statements, resolved against a known
      internal service list, and
   2. `requests.get/post/put/delete/patch(...)` call sites, resolved
@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from depatlas.fsutil import iter_files, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -114,7 +115,7 @@ class DependencyVisitor(ast.NodeVisitor):
 def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services: dict[str, str]):
     """Try to match a URL string against a known service.
 
-    Two tiers, matching SPEC.md 7.4's confidence table:
+    Two tiers, matching SPEC.pdf 7.4's confidence table:
       - Medium: the URL contains a host/path pattern that's explicitly
         registered in the endpoints manifest (e.g. "auth.internal" ->
         "auth-service"). This is a deliberate, configured mapping, so
@@ -154,7 +155,7 @@ def parse_file(
     against this map are skipped (they're almost certainly stdlib or
     third-party packages, not internal services) — this is the
     "AST-resolved import matching known internal service" signal from
-    SPEC.md 7.4, which is High confidence precisely because it isn't a
+    SPEC.pdf 7.4, which is High confidence precisely because it isn't a
     guess: we know the source file, the line, and the exact module name.
 
     known_endpoints maps a URL host/path pattern -> service name, e.g.
@@ -216,8 +217,13 @@ def parse_repo(
 ) -> list[DependencyEdge]:
     """Walk a repo directory and parse every .py file in it."""
     edges: list[DependencyEdge] = []
-    for py_file in repo_path.rglob("*.py"):
-        edges.extend(parse_file(py_file, known_services, known_endpoints))
+    for py_file in iter_files(repo_path, "*.py"):
+        try:
+            edges.extend(parse_file(py_file, known_services, known_endpoints))
+        except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+            # One unparseable file (Python 2, generated code, odd
+            # encoding) must not abort the whole scan.
+            warn_skipped(py_file, exc)
     return edges
 
 
@@ -266,12 +272,15 @@ def _collect_public_functions(node: ast.AST, results: list[dict]) -> None:
 def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignature]:
     """Extract every public function/method signature across a repo's
     .py files -- the data BREAKING_CHANGE alerting compares between
-    scans (SPEC.md section 10).
+    scans (SPEC.pdf section 10).
     """
     signatures: list[PublicSignature] = []
-    for py_file in repo_path.rglob("*.py"):
-        source = py_file.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(py_file))
+    for py_file in iter_files(repo_path, "*.py"):
+        try:
+            source = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(py_file))
+        except (SyntaxError, ValueError, UnicodeDecodeError):
+            continue  # already warned about during the edge-parsing pass
 
         results: list[dict] = []
         _collect_public_functions(tree, results)
