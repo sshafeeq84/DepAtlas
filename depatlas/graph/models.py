@@ -26,6 +26,9 @@ class DependencyEdge:
     source_line: int
     confidence: Confidence
     detected_at_sha: Optional[str] = None
+    # True when the edge comes from a test file. Kept (a test importing a
+    # client is still a real dependency) but ignored by alerts.
+    from_test: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

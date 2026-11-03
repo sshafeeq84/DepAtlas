@@ -51,12 +51,6 @@ HTTP_CLIENT_METHODS = {
     "uri",
 }
 
-# Method names so generic (`config.get("auth.timeout")`, `map.put(...)`)
-# that a call is only treated as HTTP when its string argument looks like a
-# URL. The Spring-specific names above are trusted on name alone.
-GENERIC_METHODS = {"get", "post", "put", "delete", "exchange", "uri"}
-
-
 def _text(node: Node) -> str:
     return node.text.decode("utf-8", errors="replace")
 
@@ -101,11 +95,8 @@ def _resolve_endpoint(
     url: str,
     known_endpoints: dict[str, str],
     known_services: dict[str, str],
-    require_url_shape: bool = False,
 ):
-    return resolve_endpoint(
-        url, known_endpoints, known_services, require_url_shape=require_url_shape
-    )
+    return resolve_endpoint(url, known_endpoints, known_services)
 
 
 def _string_literal(node: Node | None) -> str | None:
@@ -258,10 +249,7 @@ def parse_file(
             if url is None:
                 continue
             target_service, confidence = _resolve_endpoint(
-                url,
-                known_endpoints,
-                known_services,
-                require_url_shape=_text(name) in GENERIC_METHODS,
+                url, known_endpoints, known_services
             )
             if target_service is None:
                 continue
@@ -344,6 +332,8 @@ def _enclosing_types_are_public(method: Node) -> bool:
     """
     parent = method.parent
     while parent is not None:
+        if parent.type in ("object_creation_expression", "enum_constant"):
+            return False  # `new Runnable() { public void run() {} }` is not API
         if parent.type in _TYPE_DECLARATIONS:
             modifiers = next((c for c in parent.children if c.type == "modifiers"), None)
             words = set(_text(modifiers).split()) if modifiers is not None else set()

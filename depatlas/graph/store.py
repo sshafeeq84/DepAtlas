@@ -9,14 +9,16 @@ bottom is more valuable than one that hides its SQL behind an abstraction.
 Upsert model:
   - Services are upserted by `id` — rescanning the same service updates
     its row rather than duplicating it.
-  - Edges are replaced per-repo on each scan: we delete every edge whose
-    source_file falls under the scanned repo path, then insert the fresh
-    set. This means a rescan reflects the current state of the code
+  - Edges are replaced per-repo on each scan: we delete every edge stored
+    under the scanned repo's stable key (plus, for rows written before the
+    `repo` column existed, every edge whose source is the scanned service),
+    then insert the fresh set. This means a rescan reflects the current state of the code
     exactly, instead of accumulating stale edges from files that have
     since changed or been deleted.
 
-Snapshots (SPEC.pdf section 5, "Graph Builder" -> "Versions graph per
-commit SHA", and section 6.3's GraphSnapshot shape) are additive, not
+Snapshots (SPEC.pdf section 5, "Graph Builder" -> "Versions graph", and
+section 6.3's GraphSnapshot shape; they are ordered by time, not yet tagged
+with a commit SHA) are additive, not
 replaced: every `scan` appends a new snapshot row containing that scan's
 full edge set as JSON, so the diff engine (SPEC.pdf's Intelligence Layer)
 has a timeline to compare against. Unlike the `edges` table (which always
@@ -52,7 +54,8 @@ CREATE TABLE IF NOT EXISTS edges (
     source_line INTEGER NOT NULL,
     confidence TEXT NOT NULL,
     detected_at_sha TEXT,
-    repo TEXT
+    repo TEXT,
+    from_test INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -60,7 +63,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     repo TEXT NOT NULL,
     created_at TEXT NOT NULL,
     edges_json TEXT NOT NULL,
-    signatures_json TEXT NOT NULL DEFAULT '[]'
+    signatures_json TEXT NOT NULL DEFAULT '[]',
+    languages TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -71,7 +75,10 @@ class GraphStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
+        # timeout: wait for a concurrent scan (parallel CI jobs) instead of
+        # failing at once with "database is locked".
+        self._conn = sqlite3.connect(self.db_path, timeout=30)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
         self._tx_depth = 0
@@ -117,6 +124,12 @@ class GraphStore:
         }
         if "repo" not in edge_columns:
             self._conn.execute("ALTER TABLE edges ADD COLUMN repo TEXT")
+        if "from_test" not in edge_columns:
+            self._conn.execute("ALTER TABLE edges ADD COLUMN from_test INTEGER NOT NULL DEFAULT 0")
+        if "languages" not in existing_columns:
+            self._conn.execute(
+                "ALTER TABLE snapshots ADD COLUMN languages TEXT NOT NULL DEFAULT ''"
+            )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_service)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_service)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_repo ON edges(repo)")
@@ -125,7 +138,15 @@ class GraphStore:
                 "ALTER TABLE snapshots ADD COLUMN signatures_json TEXT NOT NULL DEFAULT '[]'"
             )
 
-    def upsert_services(self, nodes: list[ServiceNode]) -> None:
+    def upsert_services(
+        self, nodes: list[ServiceNode], ownership_inputs_supplied: bool = False
+    ) -> None:
+        """Insert or update services. `ownership_inputs_supplied` says the scan
+        was given CODEOWNERS and/or an ownership manifest: then a scanned
+        service's team is set to what they say, even None (an owner removed
+        from CODEOWNERS clears the team). Without ownership inputs a scan
+        never erases a team recorded earlier.
+        """
         for node in nodes:
             # "Real" nodes (repo/language known) should never be
             # downgraded back to a placeholder by a later scan of some
@@ -137,15 +158,20 @@ class GraphStore:
             if existing and existing[0] and not node.repo:
                 continue  # keep the existing, more complete row as-is
 
+            team_sql = (
+                "excluded.team"
+                if ownership_inputs_supplied and node.repo
+                else "COALESCE(excluded.team, services.team)"
+            )
             self._conn.execute(
-                """
+                f"""
                 INSERT INTO services (id, name, repo, language, team, last_analysed_sha, last_analysed_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name=excluded.name,
                     repo=excluded.repo,
                     language=excluded.language,
-                    team=COALESCE(excluded.team, services.team),
+                    team={team_sql},
                     last_analysed_sha=excluded.last_analysed_sha,
                     last_analysed_at=excluded.last_analysed_at
                 """,
@@ -161,33 +187,36 @@ class GraphStore:
             )
         self._commit()
 
-    def replace_edges_for_repo(self, repo_key: str, edges: list[DependencyEdge]) -> None:
+    def replace_edges_for_repo(
+        self, repo_key: str, edges: list[DependencyEdge], self_service: str | None = None
+    ) -> None:
         """Replace every edge belonging to one repo. `repo_key` is a stable
         identifier for the repo (e.g. "github:owner/name" or its resolved
         local path) -- matched exactly, so scanning /repos/pay can never
         delete /repos/payments' edges (the old LIKE-prefix delete could,
         and `_` in a path also acted as a wildcard).
 
-        Rows written before the `repo` column existed have repo IS NULL;
-        those are matched on the path *plus a separator*, so scanning
-        /repos/pay cannot delete the old edges under /repos/payments/.
+        Rows written before the `repo` column existed have repo IS NULL, and
+        their stored paths (absolute, often inside a connector's cache
+        folder) cannot be matched against a repo key. Every edge a scan
+        produces has the scanned service as its source, so those old rows
+        are removed by `source_service` instead (when `self_service` is
+        given).
 
         Placeholder services (repo == "") that no remaining edge refers to
         are removed, so a dependency that was dropped stops showing up as an
         orphaned, unowned service forever.
         """
-        n = len(repo_key) + 1
         self._conn.execute(
-            "DELETE FROM edges WHERE repo = ? OR (repo IS NULL AND "
-            "(substr(source_file, 1, ?) = ? OR substr(source_file, 1, ?) = ?))",
-            (repo_key, n, repo_key + "/", n, repo_key + "\\"),
+            "DELETE FROM edges WHERE repo = ? OR (repo IS NULL AND source_service = ?)",
+            (repo_key, self_service),
         )
         for edge in edges:
             self._conn.execute(
                 """
                 INSERT INTO edges
-                    (source_service, target_service, type, source_file, source_line, confidence, detected_at_sha, repo)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (source_service, target_service, type, source_file, source_line, confidence, detected_at_sha, repo, from_test)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     edge.source_service,
@@ -198,6 +227,7 @@ class GraphStore:
                     edge.confidence,
                     edge.detected_at_sha,
                     repo_key,
+                    int(edge.from_test),
                 ),
             )
         self._conn.execute(
@@ -207,26 +237,27 @@ class GraphStore:
         self._commit()
 
     def all_services(self) -> list[dict]:
-        rows = self._conn.execute("SELECT * FROM services ORDER BY id").fetchall()
-        columns = [c[0] for c in self._conn.execute("SELECT * FROM services").description]
-        return [dict(zip(columns, row)) for row in rows]
+        cursor = self._conn.execute("SELECT * FROM services ORDER BY id")
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def edges_for_service(self, service_name: str, direction: str = "downstream") -> list[dict]:
         """direction='downstream': what this service depends on.
         direction='upstream': what depends on this service (impact-of)."""
         column = "source_service" if direction == "downstream" else "target_service"
-        rows = self._conn.execute(
+        cursor = self._conn.execute(
             f"SELECT * FROM edges WHERE {column} = ? ORDER BY source_file, source_line",
             (service_name,),
-        ).fetchall()
-        columns = [c[0] for c in self._conn.execute("SELECT * FROM edges").description]
-        return [dict(zip(columns, row)) for row in rows]
+        )
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def save_snapshot(
         self,
         repo: str,
         edges: list[DependencyEdge],
         signatures: list | None = None,
+        languages: list[str] | None = None,
     ) -> int:
         """Persist a new snapshot of this repo's edge set (and, optionally,
         its public signature set) and return its auto-generated snapshot
@@ -240,8 +271,9 @@ class GraphStore:
         signatures_json = json.dumps([s.to_dict() for s in (signatures or [])])
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = self._conn.execute(
-            "INSERT INTO snapshots (repo, created_at, edges_json, signatures_json) VALUES (?, ?, ?, ?)",
-            (repo, created_at, edges_json, signatures_json),
+            "INSERT INTO snapshots (repo, created_at, edges_json, signatures_json, languages) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (repo, created_at, edges_json, signatures_json, ",".join(languages or [])),
         )
         self._commit()
         return cursor.lastrowid
@@ -251,7 +283,8 @@ class GraphStore:
         a snapshot, or None if no snapshot with that id exists.
         """
         row = self._conn.execute(
-            "SELECT id, repo, created_at, edges_json, signatures_json FROM snapshots WHERE id = ?",
+            "SELECT id, repo, created_at, edges_json, signatures_json, languages "
+            "FROM snapshots WHERE id = ?",
             (snapshot_id,),
         ).fetchone()
         if row is None:
@@ -262,6 +295,7 @@ class GraphStore:
             "created_at": row[2],
             "edges": json.loads(row[3]),
             "signatures": json.loads(row[4]),
+            "languages": [l for l in row[5].split(",") if l],
         }
 
     def list_snapshots(self, repo: str | None = None, limit: int | None = None) -> list[dict]:
@@ -287,11 +321,9 @@ class GraphStore:
         repo that's been scanned -- used by `depatlas export`, which
         exports the whole persisted graph rather than one repo's edges.
         """
-        rows = self._conn.execute(
-            "SELECT * FROM edges ORDER BY source_service, target_service"
-        ).fetchall()
-        columns = [c[0] for c in self._conn.execute("SELECT * FROM edges").description]
-        return [dict(zip(columns, row)) for row in rows]
+        cursor = self._conn.execute("SELECT * FROM edges ORDER BY source_service, target_service")
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def close(self) -> None:
         self._conn.close()

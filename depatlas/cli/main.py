@@ -35,8 +35,10 @@ from depatlas.ownership.codeowners import parse_codeowners
 from depatlas.ownership.manifest import parse_ownership_manifest
 from depatlas.gitinfo import get_sha
 from depatlas.intelligence.diff import compute_diff
+from depatlas.fsutil import detect_languages, is_test_path
 from depatlas.intelligence.alerts import (
     check_breaking_changes,
+    comparable_signatures,
     check_high_fan_in,
     check_new_cross_team_dependencies,
     check_orphaned_service,
@@ -79,14 +81,17 @@ def _repo_key(value: str) -> str:
 _SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
 
 
+ALERT_EXIT_CODE = 3  # distinct from 1 (click errors / crashes) and 2 (usage)
+
+
 def _exit_if_failing(alert_list: list, fail_on: str | None) -> None:
-    """Exit with status 1 if any alert is at or above `fail_on`, so a CI job
-    can block a pull request on, say, a high-severity BREAKING_CHANGE."""
+    """Exit with status 3 if any alert is at or above `fail_on`, so a CI job
+    can tell "blocked by an alert" (3) from "the tool failed" (1)."""
     if fail_on is None:
         return
     threshold = _SEVERITY_RANK[fail_on]
     if any(_SEVERITY_RANK.get(a.severity, 0) >= threshold for a in alert_list):
-        raise click.exceptions.Exit(1)
+        raise click.exceptions.Exit(ALERT_EXIT_CODE)
 
 
 _FAIL_ON_OPTION = click.option(
@@ -94,7 +99,7 @@ _FAIL_ON_OPTION = click.option(
     "fail_on",
     type=click.Choice(["low", "medium", "high"]),
     default=None,
-    help="Exit with status 1 if any alert at or above this severity is raised (for CI).",
+    help="Exit with status 3 if any alert at or above this severity is raised (for CI).",
 )
 
 
@@ -174,12 +179,12 @@ def cli() -> None:
     "language",
     type=click.Choice(sorted(PARSERS.keys()) + ["all"]),
     multiple=True,
-    default=("python",),
-    show_default=True,
+    default=(),
     help=(
         "Language parser(s) to run on this repo. Repeat the option "
         "(--language java --language javascript) or use 'all' for a repo "
-        "that mixes languages; results are saved as one service."
+        "that mixes languages; results are saved as one service. Default: "
+        "detect from file extensions."
     ),
 )
 @click.option(
@@ -263,6 +268,9 @@ def scan(
     if len(sources_given) > 1:
         raise click.UsageError("Provide only one of --repo, --github-repo, or --codecommit-repo.")
 
+    if fail_on is not None and not alerts_enabled:
+        raise click.UsageError("--fail-on has no effect with --no-alerts; drop one of them.")
+
     repo_key: str | None = None  # stable identity for this repo across scans
 
     if github_repo:
@@ -306,13 +314,20 @@ def scan(
         parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
     )
 
-    languages = sorted(PARSERS) if "all" in language else list(dict.fromkeys(language))
+    if not language:
+        languages = detect_languages(repo_path) or ["python"]
+        click.echo(f"Detected language(s): {', '.join(languages)}", err=True)
+    elif "all" in language:
+        languages = sorted(PARSERS)
+    else:
+        languages = list(dict.fromkeys(language))
     edges = []
     for lang in languages:
         edges.extend(PARSERS[lang](repo_path, known_services, known_endpoints))
     commit_sha = get_sha(repo_path)
     for edge in edges:
         edge.detected_at_sha = commit_sha
+        edge.from_test = is_test_path(Path(edge.source_file))
     nodes = build_graph(
         edges,
         repo_path,
@@ -333,9 +348,14 @@ def scan(
 
     store = GraphStore(db_path)
     with store.transaction():  # services, edges and snapshot commit together
-        store.upsert_services(nodes)
-        store.replace_edges_for_repo(repo_key, edges)
-        snapshot_id = store.save_snapshot(repo_key, edges, signatures=signatures)
+        store.upsert_services(
+            nodes,
+            ownership_inputs_supplied=bool(codeowners_path or ownership_manifest_path),
+        )
+        store.replace_edges_for_repo(repo_key, edges, self_service=self_service)
+        snapshot_id = store.save_snapshot(
+            repo_key, edges, signatures=signatures, languages=languages
+        )
 
     triggered_alerts = []
     if alerts_enabled:
@@ -356,11 +376,15 @@ def scan(
             upstream_for_breaking_check = store.edges_for_service(
                 self_service, direction="upstream"
             )
+            old_sigs, new_sigs, skipped = comparable_signatures(old_snapshot, new_snapshot)
+            if skipped:
+                click.echo(
+                    f"warning: language set changed since the previous scan; "
+                    f"not comparing signatures for: {', '.join(skipped)}",
+                    err=True,
+                )
             triggered_alerts += check_breaking_changes(
-                self_service,
-                old_snapshot["signatures"],
-                new_snapshot["signatures"],
-                upstream_for_breaking_check,
+                self_service, old_sigs, new_sigs, upstream_for_breaking_check
             )
 
         # The other three are point-in-time checks against the service
@@ -645,9 +669,14 @@ def alerts(
             self_service = repo_to_service.get(repo)
             if self_service:
                 upstream = store.edges_for_service(self_service, direction="upstream")
-                triggered += check_breaking_changes(
-                    self_service, old_snapshot["signatures"], new_snapshot["signatures"], upstream
-                )
+                old_sigs, new_sigs, skipped = comparable_signatures(old_snapshot, new_snapshot)
+                if skipped:
+                    click.echo(
+                        f"warning: {repo}: language set changed between the last two "
+                        f"scans; not comparing signatures for: {', '.join(skipped)}",
+                        err=True,
+                    )
+                triggered += check_breaking_changes(self_service, old_sigs, new_sigs, upstream)
 
     # The other three are point-in-time checks against every known service.
     for svc in all_services:
@@ -659,17 +688,17 @@ def alerts(
 
     store.close()
 
+    # --fail-on looks at everything found; --severity only filters the display.
+    all_triggered = triggered
     if severity_filter:
         triggered = [a for a in triggered if a.severity == severity_filter]
 
     if not triggered:
         click.echo("No alerts.")
-        return
-
     for alert in triggered:
         click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
 
-    _exit_if_failing(triggered, fail_on)
+    _exit_if_failing(all_triggered, fail_on)
 
 
 @cli.command()

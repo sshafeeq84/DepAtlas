@@ -239,6 +239,6 @@ def test_legacy_edges_without_repo_column_still_migrate_and_get_replaced(tmp_pat
     conn.close()
 
     s = GraphStore(db)  # must add the repo column without error
-    s.replace_edges_for_repo("/repos/payments", [])
+    s.replace_edges_for_repo("/repos/payments", [], self_service="p")
     assert s.edges_for_service("p", direction="downstream") == []
     s.close()

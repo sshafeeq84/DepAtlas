@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
 
 import requests
 
-from depatlas.gitinfo import clear_sha, write_sha
+from depatlas.gitinfo import write_sha
 
 GITHUB_API_BASE = "https://api.github.com"
 TOKEN_ENV_VAR = "DEPATLAS_GITHUB_TOKEN"
@@ -88,11 +89,15 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
     # commits would get different paths, which silently breaks diffs.
     if extract_root.exists():
         shutil.rmtree(extract_root)
-    clear_sha(extract_root / repo)
     extract_root.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
         zf.extractall(extract_root)
+        # GitHub archives carry the full commit SHA in the zip comment (as
+        # `git archive` does). Use it when it looks like one; otherwise fall
+        # back to the short SHA in the wrapper folder's name.
+        comment = zf.comment.decode("ascii", errors="ignore").strip()
+        full_sha = comment if re.fullmatch(r"[0-9a-f]{40}", comment) else None
 
     # GitHub's zipball wraps everything in a single top-level folder
     # named like "owner-repo-<short-sha>" -- resolve down into it so
@@ -103,10 +108,11 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
         # always has the same path across commits (edge identity in the
         # diff engine includes the file path).
         # The wrapper is named "owner-repo-<short sha>"; keep the SHA.
-        sha = inner_dirs[0].name.rsplit("-", 1)[-1]
+        sha = full_sha or inner_dirs[0].name.rsplit("-", 1)[-1]
         stable = extract_root / repo
         if inner_dirs[0] != stable:
             inner_dirs[0].rename(stable)
         write_sha(stable, sha)
         return stable
+    write_sha(extract_root, full_sha)  # recorded (possibly empty), never inherited
     return extract_root

@@ -21,7 +21,9 @@ All five alert types are now implemented:
 
 BREAKING_CHANGE uses full signature identity, not just function name --
 see `_params_are_breaking_change` below for the exact rules, but in
-short: a function is matched by name; once matched, a *parameter count*
+short: a function is matched by its qualified identity (repo-relative
+file, enclosing class, name; overloads are compared as a group; snapshots
+from older versions fall back to the bare name); once matched, a *parameter count*
 change is always breaking, a *type* change at a shared position is
 breaking only when both sides have a known type (Java always does;
 Python only when annotated; JS/TS never, since esprima can't see
@@ -29,13 +31,35 @@ TypeScript's type annotations), and a pure *parameter rename* (same
 position, same type-or-absence-of-type) is deliberately NOT flagged --
 most real callers invoke positionally, so a rename alone doesn't break
 them.
+
+Edges that come from test files (`from_test`) are real dependencies but are
+ignored by every alert here: a test importing another service's client must
+not inflate HIGH_FAN_IN or raise NEW_CROSS_TEAM_DEPENDENCY.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from depatlas.fsutil import language_of
+
 DEFAULT_HIGH_FAN_IN_THRESHOLD = 10
+
+
+def comparable_signatures(old_snapshot: dict, new_snapshot: dict) -> tuple[list, list, list]:
+    """Signatures of the two snapshots restricted to languages scanned in
+    *both*, plus the languages that were skipped. Scanning with `--language
+    all` and later with `--language java` would otherwise make every Python
+    and JavaScript function look removed. Snapshots saved before the language
+    set was recorded are compared in full.
+    """
+    old_langs = set(old_snapshot.get("languages") or [])
+    new_langs = set(new_snapshot.get("languages") or [])
+    if not old_langs or not new_langs or old_langs == new_langs:
+        return old_snapshot["signatures"], new_snapshot["signatures"], []
+    shared = old_langs & new_langs
+    keep = lambda sigs: [s for s in sigs if language_of(s["source_file"]) in shared]
+    return keep(old_snapshot["signatures"]), keep(new_snapshot["signatures"]), sorted(old_langs ^ new_langs)
 
 
 @dataclass
@@ -57,6 +81,8 @@ def check_new_cross_team_dependencies(
     """
     alerts = []
     for edge in added_edges:
+        if edge.get("from_test"):
+            continue  # a test importing a client is not a production dependency
         source_team = service_teams.get(edge["source_service"])
         target_team = service_teams.get(edge["target_service"])
         if source_team and target_team and source_team != target_team:
@@ -84,7 +110,7 @@ def check_high_fan_in(
     shouldn't inflate the count the way 3 different dependent services
     would.
     """
-    distinct_dependents = {e["source_service"] for e in upstream_edges}
+    distinct_dependents = {e["source_service"] for e in upstream_edges if not e.get("from_test")}
     if len(distinct_dependents) >= threshold:
         return [
             Alert(
@@ -107,6 +133,8 @@ def check_orphaned_service(
     it's either dead code, a new service nobody's wired up yet, or a
     scan/manifest misconfiguration worth double-checking.
     """
+    downstream_edges = [e for e in downstream_edges if not e.get("from_test")]
+    upstream_edges = [e for e in upstream_edges if not e.get("from_test")]
     if not downstream_edges and not upstream_edges:
         return [
             Alert(
@@ -204,6 +232,7 @@ def check_breaking_changes(
     being renamed alone -- see _params_are_breaking_change for the full
     reasoning on why that's treated as safe.
     """
+    upstream_edges = [e for e in upstream_edges if not e.get("from_test")]
     if not upstream_edges:
         return []
 
