@@ -73,7 +73,7 @@ def test_interface_methods_count_as_public_signatures(tmp_path):
     from depatlas.parsers.java_parser import extract_signatures as java_sigs
 
     (tmp_path / "Api.java").write_text(
-        "package x;\ninterface Api { String find(long id, java.util.List<String> tags); }\n"
+        "package x;\npublic interface Api { String find(long id, java.util.List<String> tags); }\n"
     )
     sigs = java_sigs(tmp_path, "svc")
 

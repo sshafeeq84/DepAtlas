@@ -194,10 +194,13 @@ def check_breaking_changes(
     trigger explicitly says "with known dependents"; a signature change
     on a service nobody calls isn't breaking anything).
 
-    Matched by function name -- if the function itself is renamed, that
-    genuinely is a removal from a caller's perspective (old callers
-    calling the old name break), so it's correctly reported as a
-    removal, not silently ignored. What's NOT flagged is a *parameter*
+    Matched by qualified name (file, enclosing class, function) -- so two
+    methods that merely share a name are never confused, and overloads are
+    compared as a group. Snapshots saved by older versions have no
+    qualified name and fall back to the bare function name. If the function
+    itself is renamed or moved to another file, that genuinely is a removal
+    from a caller's perspective (old callers break), so it's correctly
+    reported as a removal, not silently ignored. What's NOT flagged is a *parameter*
     being renamed alone -- see _params_are_breaking_change for the full
     reasoning on why that's treated as safe.
     """

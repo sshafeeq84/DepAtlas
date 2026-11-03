@@ -17,6 +17,12 @@ def write_sha(repo_dir: Path, sha: str | None) -> None:
         _sidecar(repo_dir).write_text(sha, encoding="utf-8")
 
 
+def clear_sha(repo_dir: Path) -> None:
+    """Forget any SHA recorded by an earlier fetch into `repo_dir`, so a
+    fetch that records none can never inherit the previous scan's."""
+    _sidecar(repo_dir).unlink(missing_ok=True)
+
+
 def get_sha(repo_dir: Path) -> str | None:
     """The commit SHA for a scanned repo: the one a connector recorded, else
     `git rev-parse HEAD` for a local checkout, else None."""

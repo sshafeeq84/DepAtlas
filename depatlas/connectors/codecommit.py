@@ -21,7 +21,7 @@ import os
 import shutil
 from pathlib import Path
 
-from depatlas.gitinfo import write_sha
+from depatlas.gitinfo import clear_sha, write_sha
 
 try:  # boto3 is an optional extra: pip install "depatlas[aws]"
     import boto3
@@ -79,13 +79,17 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
     if extract_root.exists():
         shutil.rmtree(extract_root)
     extract_root.mkdir(parents=True)
+    clear_sha(extract_root)
 
     commit_ids: list[str] = []
+    # Every call after the first reads the same commit. Without pinning, a
+    # push during the walk would produce a tree made of two commits.
+    pinned = {"id": commit_specifier}
 
     def _walk(folder_path: str) -> None:
         kwargs = {"repositoryName": repo_name, "folderPath": folder_path}
-        if commit_specifier:
-            kwargs["commitSpecifier"] = commit_specifier
+        if pinned["id"]:
+            kwargs["commitSpecifier"] = pinned["id"]
 
         try:
             response = client.get_folder(**kwargs)
@@ -101,11 +105,13 @@ def fetch_repo(repo_name: str, client, cache_dir: Path, commit_specifier: str = 
 
         if response.get("commitId"):
             commit_ids.append(response["commitId"])
+            if not pinned["id"]:
+                pinned["id"] = response["commitId"]
 
         for file_info in response.get("files", []):
             file_kwargs = {"repositoryName": repo_name, "filePath": file_info["absolutePath"]}
-            if commit_specifier:
-                file_kwargs["commitSpecifier"] = commit_specifier
+            if pinned["id"]:
+                file_kwargs["commitSpecifier"] = pinned["id"]
             file_response = client.get_file(**file_kwargs)
 
             local_path = extract_root / file_info["absolutePath"].lstrip("/")

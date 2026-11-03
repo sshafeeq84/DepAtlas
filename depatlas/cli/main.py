@@ -1,10 +1,11 @@
 """DepAtlas CLI.
 
-v1 slice so far: `scan` (persists to a local SQLite graph store, with
-optional CODEOWNERS-based team resolution, against a local directory, a
-GitHub repo, or an AWS CodeCommit repo) and `query` (reads back from it,
-by service or by team). SPEC.pdf section 9 has the full planned command
-surface; `watch` and `init` come later.
+Commands: `scan` (parse a local directory, GitHub repo or AWS CodeCommit
+repo into a persisted SQLite graph, with CODEOWNERS / manifest team
+resolution and alerting), `query` (read it back by service or team),
+`snapshots` and `diff` (history), `alerts` (check the whole stored graph),
+and `export` (JSON or DOT). SPEC.pdf section 9 has the full planned command
+surface; `watch` and `init` are not built yet.
 """
 
 from __future__ import annotations
@@ -65,7 +66,40 @@ SIGNATURE_EXTRACTORS = {
 }
 
 
+def _repo_key(value: str) -> str:
+    """Turn a `--repo` filter into the key snapshots are stored under:
+    "github:owner/repo" and "codecommit:name" are used as given; anything
+    else is a local path, resolved to an absolute one.
+    """
+    if value.startswith(("github:", "codecommit:")):
+        return value
+    return str(Path(value).resolve())
+
+
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+def _exit_if_failing(alert_list: list, fail_on: str | None) -> None:
+    """Exit with status 1 if any alert is at or above `fail_on`, so a CI job
+    can block a pull request on, say, a high-severity BREAKING_CHANGE."""
+    if fail_on is None:
+        return
+    threshold = _SEVERITY_RANK[fail_on]
+    if any(_SEVERITY_RANK.get(a.severity, 0) >= threshold for a in alert_list):
+        raise click.exceptions.Exit(1)
+
+
+_FAIL_ON_OPTION = click.option(
+    "--fail-on",
+    "fail_on",
+    type=click.Choice(["low", "medium", "high"]),
+    default=None,
+    help="Exit with status 1 if any alert at or above this severity is raised (for CI).",
+)
+
+
 @click.group()
+@click.version_option(package_name="depatlas")
 def cli() -> None:
     """DepAtlas -- map service-to-service dependencies from source code."""
 
@@ -138,10 +172,15 @@ def cli() -> None:
 @click.option(
     "--language",
     "language",
-    type=click.Choice(sorted(PARSERS.keys())),
-    default="python",
+    type=click.Choice(sorted(PARSERS.keys()) + ["all"]),
+    multiple=True,
+    default=("python",),
     show_default=True,
-    help="Which language parser to use for this repo.",
+    help=(
+        "Language parser(s) to run on this repo. Repeat the option "
+        "(--language java --language javascript) or use 'all' for a repo "
+        "that mixes languages; results are saved as one service."
+    ),
 )
 @click.option(
     "--codeowners",
@@ -199,6 +238,7 @@ def cli() -> None:
     show_default=True,
     help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
 )
+@_FAIL_ON_OPTION
 def scan(
     repo_path: Path | None,
     github_repo: str | None,
@@ -207,13 +247,14 @@ def scan(
     ref: str,
     cache_dir: Path,
     services_path: Path,
-    language: str,
+    language: tuple[str, ...],
     codeowners_path: Path | None,
     ownership_manifest_path: Path | None,
     output_path: Path | None,
     db_path: Path,
     alerts_enabled: bool,
     fan_in_threshold: int,
+    fail_on: str | None,
 ) -> None:
     """Scan a repo (local, GitHub, or CodeCommit), persist the results, and print the edges found."""
     sources_given = [s for s in (repo_path, github_repo, codecommit_repo) if s]
@@ -265,8 +306,10 @@ def scan(
         parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
     )
 
-    parse_repo = PARSERS[language]
-    edges = parse_repo(repo_path, known_services, known_endpoints)
+    languages = sorted(PARSERS) if "all" in language else list(dict.fromkeys(language))
+    edges = []
+    for lang in languages:
+        edges.extend(PARSERS[lang](repo_path, known_services, known_endpoints))
     commit_sha = get_sha(repo_path)
     for edge in edges:
         edge.detected_at_sha = commit_sha
@@ -274,7 +317,7 @@ def scan(
         edges,
         repo_path,
         self_service,
-        language=language,
+        language=",".join(languages),
         codeowners_rules=codeowners_rules,
         manifest_teams=manifest_teams,
         repo_id=repo_key,
@@ -284,13 +327,15 @@ def scan(
         if node.id == self_service:
             node.last_analysed_sha = commit_sha
 
-    extract_signatures_fn = SIGNATURE_EXTRACTORS[language]
-    signatures = extract_signatures_fn(repo_path, self_service)
+    signatures = []
+    for lang in languages:
+        signatures.extend(SIGNATURE_EXTRACTORS[lang](repo_path, self_service))
 
     store = GraphStore(db_path)
-    store.upsert_services(nodes)
-    store.replace_edges_for_repo(repo_key, edges)
-    snapshot_id = store.save_snapshot(repo_key, edges, signatures=signatures)
+    with store.transaction():  # services, edges and snapshot commit together
+        store.upsert_services(nodes)
+        store.replace_edges_for_repo(repo_key, edges)
+        snapshot_id = store.save_snapshot(repo_key, edges, signatures=signatures)
 
     triggered_alerts = []
     if alerts_enabled:
@@ -343,6 +388,8 @@ def scan(
 
     for alert in triggered_alerts:
         click.echo(f"[{alert.severity.upper()}] {alert.type}: {alert.message}", err=True)
+
+    _exit_if_failing(triggered_alerts, fail_on)
 
 
 @cli.command()
@@ -437,7 +484,7 @@ def query(service_name: str | None, team_name: str | None, direction: str, db_pa
 def snapshots(repo_filter: str | None, limit: int, db_path: Path) -> None:
     """List saved snapshots (most recent first) -- use their ids with `diff --from/--to`."""
     if repo_filter is not None:
-        repo_filter = str(Path(repo_filter).resolve())
+        repo_filter = _repo_key(repo_filter)
 
     store = GraphStore(db_path)
     rows = store.list_snapshots(repo=repo_filter, limit=limit)
@@ -497,7 +544,7 @@ def diff(
         if not repo_filter:
             store.close()
             raise click.UsageError("--last requires --repo.")
-        repo_filter = str(Path(repo_filter).resolve())
+        repo_filter = _repo_key(repo_filter)
         recent = store.list_snapshots(repo=repo_filter, limit=2)
         if len(recent) < 2:
             store.close()
@@ -566,7 +613,10 @@ def diff(
     show_default=True,
     help="Path to the SQLite graph store.",
 )
-def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) -> None:
+@_FAIL_ON_OPTION
+def alerts(
+    severity_filter: str | None, fan_in_threshold: int, db_path: Path, fail_on: str | None
+) -> None:
     """Check the whole stored graph for all five SPEC.pdf section 10
     alert types: NEW_CROSS_TEAM_DEPENDENCY, HIGH_FAN_IN, ORPHANED_SERVICE,
     UNOWNED_SERVICE, and BREAKING_CHANGE.
@@ -618,6 +668,8 @@ def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) ->
 
     for alert in triggered:
         click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
+
+    _exit_if_failing(triggered, fail_on)
 
 
 @cli.command()

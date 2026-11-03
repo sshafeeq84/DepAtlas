@@ -22,7 +22,7 @@ from pathlib import Path
 
 import requests
 
-from depatlas.gitinfo import write_sha
+from depatlas.gitinfo import clear_sha, write_sha
 
 GITHUB_API_BASE = "https://api.github.com"
 TOKEN_ENV_VAR = "DEPATLAS_GITHUB_TOKEN"
@@ -88,6 +88,7 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
     # commits would get different paths, which silently breaks diffs.
     if extract_root.exists():
         shutil.rmtree(extract_root)
+    clear_sha(extract_root / repo)
     extract_root.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:

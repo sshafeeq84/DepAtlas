@@ -29,3 +29,39 @@ def warn_skipped(path: Path, reason: Exception) -> None:
     import sys
 
     print(f"warning: skipping {path} ({type(reason).__name__}: {reason})", file=sys.stderr)
+
+
+def is_test_path(rel: Path) -> bool:
+    """True for files that hold tests, not the service's public interface.
+    Deleting or renaming a test must never look like a breaking API change.
+    """
+    name = rel.name
+    return bool({"test", "tests", "__tests__"} & set(rel.parts[:-1])) or (
+        name.startswith("test_")
+        or name.endswith(
+            (
+                "_test.py",
+                "Test.java",
+                "Tests.java",
+                ".test.js",
+                ".spec.js",
+                ".test.jsx",
+                ".spec.jsx",
+                ".test.ts",
+                ".spec.ts",
+                ".test.tsx",
+                ".spec.tsx",
+            )
+        )
+    )
+
+
+def relative_to_repo(path: str | Path, repo_path: Path) -> str:
+    """A path relative to the repo root, with forward slashes. Stored paths
+    must not depend on the directory a scan ran from, or `diff` reports every
+    edge as moved whenever the repo is scanned from somewhere else.
+    """
+    try:
+        return Path(path).relative_to(repo_path).as_posix()
+    except ValueError:
+        return str(path)

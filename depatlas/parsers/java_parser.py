@@ -27,9 +27,9 @@ from pathlib import Path
 import tree_sitter_java
 from tree_sitter import Language, Node, Parser
 
-from depatlas.fsutil import iter_files, warn_skipped
+from depatlas.fsutil import is_test_path, iter_files, relative_to_repo, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
-from depatlas.resolution import resolve_endpoint
+from depatlas.resolution import drop_self_edges, resolve_endpoint
 
 _PARSER = Parser(Language(tree_sitter_java.language()))
 
@@ -54,7 +54,7 @@ HTTP_CLIENT_METHODS = {
 # Method names so generic (`config.get("auth.timeout")`, `map.put(...)`)
 # that a call is only treated as HTTP when its string argument looks like a
 # URL. The Spring-specific names above are trusted on name alone.
-GENERIC_METHODS = {"get", "post", "put", "delete"}
+GENERIC_METHODS = {"get", "post", "put", "delete", "exchange", "uri"}
 
 
 def _text(node: Node) -> str:
@@ -290,10 +290,14 @@ def parse_repo(
     edges: list[DependencyEdge] = []
     for java_file in iter_files(repo_path, "*.java"):
         try:
-            edges.extend(parse_file(java_file, known_services, known_endpoints))
+            found = parse_file(java_file, known_services, known_endpoints)
         except (UnicodeDecodeError, OSError) as exc:
             warn_skipped(java_file, exc)
-    return edges
+            continue
+        for edge in found:
+            edge.source_file = relative_to_repo(edge.source_file, repo_path)
+        edges.extend(found)
+    return drop_self_edges(edges)
 
 
 def _type_name(node: Node | None) -> str | None:
@@ -333,6 +337,23 @@ def _enclosing_types(node: Node) -> str:
     return ".".join(reversed(names))
 
 
+def _enclosing_types_are_public(method: Node) -> bool:
+    """False if the method sits in a package-private (or private) class --
+    its methods are not part of the service's public interface even when
+    the methods themselves are marked public.
+    """
+    parent = method.parent
+    while parent is not None:
+        if parent.type in _TYPE_DECLARATIONS:
+            modifiers = next((c for c in parent.children if c.type == "modifiers"), None)
+            words = set(_text(modifiers).split()) if modifiers is not None else set()
+            inside_interface = parent.parent is not None and parent.parent.type == "interface_body"
+            if "public" not in words and not inside_interface:
+                return False
+        parent = parent.parent
+    return True
+
+
 def _is_public(method: Node) -> bool:
     modifiers = next((c for c in method.children if c.type == "modifiers"), None)
     words = set(_text(modifiers).split()) if modifiers is not None else set()
@@ -352,13 +373,19 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
     """
     signatures: list[PublicSignature] = []
     for java_file in iter_files(repo_path, "*.java"):
+        if is_test_path(java_file.relative_to(repo_path)):
+            continue  # tests are not the service's public interface
         try:
             root = _PARSER.parse(java_file.read_bytes()).root_node
         except OSError:
             continue
 
         for node in _walk(root):
-            if node.type != "method_declaration" or not _is_public(node):
+            if (
+                node.type != "method_declaration"
+                or not _is_public(node)
+                or not _enclosing_types_are_public(node)
+            ):
                 continue
             name = node.child_by_field_name("name")
             params_node = node.child_by_field_name("parameters")
@@ -385,7 +412,7 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
                     service=self_service,
                     name=_text(name),
                     params=params,
-                    source_file=str(java_file),
+                    source_file=relative_to_repo(java_file, repo_path),
                     source_line=_line(name),
                     qualname=(
                         f"{java_file.relative_to(repo_path).as_posix()}::"
