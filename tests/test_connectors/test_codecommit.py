@@ -127,3 +127,21 @@ def test_get_client_falls_back_to_default_session_without_profile(monkeypatch):
     get_client("us-east-1")
 
     assert calls["profile_name"] is None
+
+
+def test_fetch_repo_records_commit_id(tmp_path):
+    from depatlas.gitinfo import get_sha
+
+    folders = {"/": {"files": [], "subFolders": [], "commitId": "deadbeef1234"}}
+    result = fetch_repo("payments", _FakeCodeCommitClient(folders=folders, files={}), tmp_path)
+
+    assert get_sha(result) == "deadbeef1234"
+
+
+def test_get_client_explains_missing_boto3(monkeypatch):
+    import depatlas.connectors.codecommit as codecommit_module
+
+    monkeypatch.setattr(codecommit_module, "boto3", None)
+
+    with pytest.raises(CodeCommitConnectorError, match=r"depatlas\[aws\]"):
+        get_client("us-east-1")

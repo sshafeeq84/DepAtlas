@@ -32,6 +32,7 @@ from depatlas.graph.builder import build_graph
 from depatlas.graph.store import GraphStore
 from depatlas.ownership.codeowners import parse_codeowners
 from depatlas.ownership.manifest import parse_ownership_manifest
+from depatlas.gitinfo import get_sha
 from depatlas.intelligence.diff import compute_diff
 from depatlas.intelligence.alerts import (
     check_breaking_changes,
@@ -266,6 +267,9 @@ def scan(
 
     parse_repo = PARSERS[language]
     edges = parse_repo(repo_path, known_services, known_endpoints)
+    commit_sha = get_sha(repo_path)
+    for edge in edges:
+        edge.detected_at_sha = commit_sha
     nodes = build_graph(
         edges,
         repo_path,
@@ -273,7 +277,12 @@ def scan(
         language=language,
         codeowners_rules=codeowners_rules,
         manifest_teams=manifest_teams,
+        repo_id=repo_key,
     )
+
+    for node in nodes:
+        if node.id == self_service:
+            node.last_analysed_sha = commit_sha
 
     extract_signatures_fn = SIGNATURE_EXTRACTORS[language]
     signatures = extract_signatures_fn(repo_path, self_service)
@@ -294,7 +303,7 @@ def scan(
         if len(recent) == 2:
             old_snapshot = store.get_snapshot(recent[1]["id"])
             new_snapshot = store.get_snapshot(recent[0]["id"])
-            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"], by_location=False)
             triggered_alerts += check_new_cross_team_dependencies(
                 diff_result["added"], service_teams
             )
@@ -580,7 +589,7 @@ def alerts(severity_filter: str | None, fan_in_threshold: int, db_path: Path) ->
         if len(recent) == 2:
             old_snapshot = store.get_snapshot(recent[1]["id"])
             new_snapshot = store.get_snapshot(recent[0]["id"])
-            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"], by_location=False)
             triggered += check_new_cross_team_dependencies(diff_result["added"], service_teams)
 
             self_service = repo_to_service.get(repo)

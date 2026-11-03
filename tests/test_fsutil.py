@@ -79,3 +79,30 @@ def test_interface_methods_count_as_public_signatures(tmp_path):
 
     assert [s.name for s in sigs] == ["find"]
     assert sigs[0].params == [{"name": "id", "type": "long"}, {"name": "tags", "type": "List"}]
+
+
+def test_resolver_ignores_self_and_whole_word_only():
+    from depatlas.resolution import resolve_endpoint
+
+    services = {"__self__": "payments-service", "x": "auth-service", "y": "payments-service"}
+    # The scanned service is never a target of its own URLs.
+    assert resolve_endpoint("http://payments.internal/charge", {}, services) == (None, None)
+    # "auth" must not match "oauth" or "author".
+    assert resolve_endpoint("https://oauth.example.com/token", {}, services) == (None, None)
+    assert resolve_endpoint("https://example.com/author/1", {}, services) == (None, None)
+    # ...but a real reference still matches.
+    assert resolve_endpoint("http://auth-internal.example.com/v", {}, services) == (
+        "auth-service",
+        "low",
+    )
+
+
+def test_java_config_get_is_not_an_http_call(tmp_path):
+    from depatlas.parsers.java_parser import parse_repo as java_parse
+
+    (tmp_path / "C.java").write_text(
+        'class C { void a(){ config.get("auth.timeout"); client.get("http://auth-service/x"); } }\n'
+    )
+    edges = java_parse(tmp_path, {"__self__": "me", "k": "auth-service"})
+
+    assert len(edges) == 1  # only the URL-shaped call

@@ -29,6 +29,7 @@ from tree_sitter import Language, Node, Parser
 
 from depatlas.fsutil import iter_files, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
+from depatlas.resolution import resolve_endpoint
 
 _PARSER = Parser(Language(tree_sitter_java.language()))
 
@@ -49,6 +50,11 @@ HTTP_CLIENT_METHODS = {
     # argument of .uri(), not of .get().
     "uri",
 }
+
+# Method names so generic (`config.get("auth.timeout")`, `map.put(...)`)
+# that a call is only treated as HTTP when its string argument looks like a
+# URL. The Spring-specific names above are trusted on name alone.
+GENERIC_METHODS = {"get", "post", "put", "delete"}
 
 
 def _text(node: Node) -> str:
@@ -91,21 +97,15 @@ def warn_skipped_partial(file_path: Path) -> None:
     )
 
 
-def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services: dict[str, str]):
-    """Same two-tier resolution as the Python parser's _resolve_endpoint:
-    an explicit endpoints-registry match is Medium confidence; a loose
-    substring match against a known service name is Low confidence.
-    """
-    for pattern, service in known_endpoints.items():
-        if pattern in url:
-            return service, "medium"
-
-    for service in set(known_services.values()):
-        slug_root = service.split("-service")[0]
-        if slug_root and slug_root in url:
-            return service, "low"
-
-    return None, None
+def _resolve_endpoint(
+    url: str,
+    known_endpoints: dict[str, str],
+    known_services: dict[str, str],
+    require_url_shape: bool = False,
+):
+    return resolve_endpoint(
+        url, known_endpoints, known_services, require_url_shape=require_url_shape
+    )
 
 
 def _string_literal(node: Node | None) -> str | None:
@@ -257,7 +257,12 @@ def parse_file(
             url = _url_text(args.named_children[0], string_fields)
             if url is None:
                 continue
-            target_service, confidence = _resolve_endpoint(url, known_endpoints, known_services)
+            target_service, confidence = _resolve_endpoint(
+                url,
+                known_endpoints,
+                known_services,
+                require_url_shape=_text(name) in GENERIC_METHODS,
+            )
             if target_service is None:
                 continue
             edges.append(
@@ -305,6 +310,27 @@ def _type_name(node: Node | None) -> str | None:
     if node.type == "array_type":
         return _type_name(node.child_by_field_name("element"))
     return _text(node).split(".")[-1]
+
+
+_TYPE_DECLARATIONS = (
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
+)
+
+
+def _enclosing_types(node: Node) -> str:
+    """Dotted names of the classes/interfaces enclosing `node`, outermost first."""
+    names = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in _TYPE_DECLARATIONS:
+            type_name = parent.child_by_field_name("name")
+            if type_name is not None:
+                names.append(_text(type_name))
+        parent = parent.parent
+    return ".".join(reversed(names))
 
 
 def _is_public(method: Node) -> bool:
@@ -361,6 +387,10 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
                     params=params,
                     source_file=str(java_file),
                     source_line=_line(name),
+                    qualname=(
+                        f"{java_file.relative_to(repo_path).as_posix()}::"
+                        f"{_enclosing_types(node)}.{_text(name)}"
+                    ),
                 )
             )
 

@@ -40,6 +40,7 @@ from esprima.nodes import Node
 
 from depatlas.fsutil import iter_files
 from depatlas.graph.models import DependencyEdge, PublicSignature
+from depatlas.resolution import resolve_endpoint
 
 HTTP_CLIENT_OBJECTS = {"axios", "got"}
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
@@ -47,16 +48,7 @@ HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
 def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services: dict[str, str]):
     """Same two-tier resolution used by the Python and Java parsers."""
-    for pattern, service in known_endpoints.items():
-        if pattern in url:
-            return service, "medium"
-
-    for service in set(known_services.values()):
-        slug_root = service.split("-service")[0]
-        if slug_root and slug_root in url:
-            return service, "low"
-
-    return None, None
+    return resolve_endpoint(url, known_endpoints, known_services)
 
 
 def _resolve_module(module_path: str, known_services: dict[str, str]) -> str | None:
@@ -268,7 +260,9 @@ def parse_repo(
     return edges
 
 
-def _extract_signatures_from_file(file_path: Path, self_service: str) -> list[PublicSignature]:
+def _extract_signatures_from_file(
+    file_path: Path, self_service: str, rel_path: str | None = None
+) -> list[PublicSignature]:
     """A module's public interface, in JS/TS terms, is what it exports --
     so this looks specifically for `export function foo(...)` and
     `export default function foo(...)`, not every function in the file
@@ -316,6 +310,7 @@ def _extract_signatures_from_file(file_path: Path, self_service: str) -> list[Pu
                 ],
                 source_file=str(file_path),
                 source_line=node.loc.start.line if node.loc else 0,
+                qualname=f"{rel_path or file_path.name}::{declaration.id.name}",
             )
         )
 
@@ -330,5 +325,9 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
     signatures: list[PublicSignature] = []
     for pattern in ("*.js", "*.jsx", "*.ts", "*.tsx"):
         for source_file in iter_files(repo_path, pattern):
-            signatures.extend(_extract_signatures_from_file(source_file, self_service))
+            signatures.extend(
+                _extract_signatures_from_file(
+                    source_file, self_service, source_file.relative_to(repo_path).as_posix()
+                )
+            )
     return signatures

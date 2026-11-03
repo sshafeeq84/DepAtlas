@@ -74,6 +74,7 @@ def build_graph(
     language: str = "python",
     codeowners_rules: list[OwnershipRule] | None = None,
     manifest_teams: dict[str, str] | None = None,
+    repo_id: str | None = None,
 ) -> list[ServiceNode]:
     """Resolve a batch of edges (from one repo scan) into ServiceNodes.
 
@@ -95,7 +96,10 @@ def build_graph(
                 ServiceNode(
                     id=name,
                     name=name,
-                    repo=str(repo_path),
+                    # The stable repo identity (e.g. "github:owner/repo"),
+                    # which is also what snapshots are saved under -- so
+                    # `alerts` can find this service's snapshots later.
+                    repo=repo_id or str(repo_path),
                     language=language,
                     team=team,
                     last_analysed_at=now,

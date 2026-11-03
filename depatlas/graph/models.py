@@ -73,6 +73,12 @@ class PublicSignature:
     params: list[dict]
     source_file: str
     source_line: int
+    # Unique identity within the service, e.g. "pay/charge.py::Charger.run"
+    # (repo-relative file, enclosing class, method). Without it, two
+    # functions that merely share a name -- `get` in two classes, or Java
+    # overloads -- overwrote each other when signatures were compared.
+    # None for snapshots saved by older versions.
+    qualname: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

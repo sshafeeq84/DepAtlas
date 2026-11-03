@@ -22,6 +22,7 @@ from pathlib import Path
 
 from depatlas.fsutil import iter_files, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
+from depatlas.resolution import resolve_endpoint
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
@@ -129,18 +130,7 @@ def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services:
 
     Returns (service_name, confidence) or (None, None) if nothing matched.
     """
-    for pattern, service in known_endpoints.items():
-        if pattern in url:
-            return service, "medium"
-
-    for service in set(known_services.values()):
-        # Loosely check whether the service's "slug root" (e.g. "auth" out
-        # of "auth-service") shows up in the URL at all.
-        slug_root = service.split("-service")[0]
-        if slug_root and slug_root in url:
-            return service, "low"
-
-    return None, None
+    return resolve_endpoint(url, known_endpoints, known_services)
 
 
 def parse_file(
@@ -238,7 +228,7 @@ def _param_info(arg: ast.arg) -> dict:
     return {"name": arg.arg, "type": type_str}
 
 
-def _collect_public_functions(node: ast.AST, results: list[dict]) -> None:
+def _collect_public_functions(node: ast.AST, results: list[dict], prefix: str = "") -> None:
     """Collect public (non-underscore-prefixed) functions defined directly
     at module level or as class methods -- not nested inside another
     function, since a closure/helper defined inside a function body isn't
@@ -255,6 +245,7 @@ def _collect_public_functions(node: ast.AST, results: list[dict]) -> None:
                 results.append(
                     {
                         "name": child.name,
+                        "qualified": f"{prefix}{child.name}",
                         "params": [_param_info(a) for a in child.args.args],
                         "line": child.lineno,
                     }
@@ -263,7 +254,7 @@ def _collect_public_functions(node: ast.AST, results: list[dict]) -> None:
             # inside it is a private implementation detail, not part of
             # the public interface.
         elif isinstance(child, ast.ClassDef):
-            _collect_public_functions(child, results)
+            _collect_public_functions(child, results, f"{prefix}{child.name}.")
         # Other node types (If, For, etc.) aren't descended into either
         # -- we only care about what's directly reachable at module or
         # class scope.
@@ -293,6 +284,7 @@ def extract_signatures(repo_path: Path, self_service: str) -> list[PublicSignatu
                     params=r["params"],
                     source_file=str(py_file),
                     source_line=r["line"],
+                    qualname=f"{py_file.relative_to(repo_path).as_posix()}::{r['qualified']}",
                 )
             )
 

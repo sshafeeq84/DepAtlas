@@ -245,3 +245,48 @@ def test_multiple_breaking_changes_all_reported():
     alerts = check_breaking_changes("payments-service", old_sigs, new_sigs, upstream)
 
     assert len(alerts) == 2
+
+
+# --- signature identity (review fix): same name != same function ---
+
+
+def _sig(qualname, params, name=None):
+    return {
+        "name": name or qualname.split("::")[-1].split(".")[-1],
+        "qualname": qualname,
+        "params": [{"name": n, "type": t} for n, t in params],
+    }
+
+
+_DEPENDENT = [{"source_service": "orders-service"}]
+
+
+def test_same_method_name_in_two_classes_is_not_confused():
+    old = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
+    new = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
+    assert check_breaking_changes("svc", old, new, _DEPENDENT) == []
+
+
+def test_change_in_one_of_two_same_named_methods_is_attributed_correctly():
+    old = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "str")])]
+    new = [_sig("a.py::A.get", [("x", "int")]), _sig("a.py::B.get", [("x", "bytes")])]
+    alerts = check_breaking_changes("svc", old, new, _DEPENDENT)
+    assert len(alerts) == 1
+    assert "B.get" in alerts[0].message
+
+
+def test_java_overloads_are_compared_as_a_group():
+    old = [_sig("C.java::C.find", [("id", "long")]), _sig("C.java::C.find", [("n", "String"), ("l", "int")])]
+    same = list(old)
+    assert check_breaking_changes("svc", old, same, _DEPENDENT) == []
+
+    dropped = [_sig("C.java::C.find", [("id", "long")])]
+    alerts = check_breaking_changes("svc", old, dropped, _DEPENDENT)
+    assert len(alerts) == 1
+    assert "2 parameter" in alerts[0].message
+
+
+def test_legacy_snapshots_without_qualname_still_compare_by_name():
+    old = [{"name": "charge", "params": [{"name": "a", "type": "int"}]}]
+    new = [_sig("pay.py::charge", [("a", "int")])]
+    assert check_breaking_changes("svc", old, new, _DEPENDENT) == []

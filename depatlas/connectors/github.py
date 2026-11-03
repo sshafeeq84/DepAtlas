@@ -22,6 +22,8 @@ from pathlib import Path
 
 import requests
 
+from depatlas.gitinfo import write_sha
+
 GITHUB_API_BASE = "https://api.github.com"
 TOKEN_ENV_VAR = "DEPATLAS_GITHUB_TOKEN"
 
@@ -99,8 +101,11 @@ def fetch_repo(owner: str, repo: str, token: str, cache_dir: Path, ref: str = "H
         # Rename the SHA-named wrapper to a stable name so the same repo
         # always has the same path across commits (edge identity in the
         # diff engine includes the file path).
+        # The wrapper is named "owner-repo-<short sha>"; keep the SHA.
+        sha = inner_dirs[0].name.rsplit("-", 1)[-1]
         stable = extract_root / repo
         if inner_dirs[0] != stable:
             inner_dirs[0].rename(stable)
+        write_sha(stable, sha)
         return stable
     return extract_root

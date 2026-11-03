@@ -205,38 +205,74 @@ def check_breaking_changes(
         return []
 
     distinct_dependents = {e["source_service"] for e in upstream_edges}
-    old_by_name = {s["name"]: s for s in old_signatures}
-    new_by_name = {s["name"]: s for s in new_signatures}
+    dependents_note = f"(has {len(distinct_dependents)} known dependent(s))"
+
+    # Snapshots saved by older versions have no `qualname`; for those the
+    # bare name is the only identity available, so fall back to it rather
+    # than reporting every function as removed right after an upgrade.
+    legacy = any(not s.get("qualname") for s in old_signatures + new_signatures)
+
+    def _key(sig: dict) -> str:
+        return sig["name"] if legacy else sig["qualname"]
+
+    def _label(key: str) -> str:
+        return key if legacy else key.split("::", 1)[-1]
+
+    old_groups = _group_by(old_signatures, _key)
+    new_groups = _group_by(new_signatures, _key)
 
     alerts = []
-    for name, old_sig in old_by_name.items():
-        if name not in new_by_name:
+    for key, old_sigs in old_groups.items():
+        label = _label(key)
+        if key not in new_groups:
             alerts.append(
                 Alert(
                     type="BREAKING_CHANGE",
                     severity="high",
                     service=service,
-                    message=(
-                        f"Public function '{name}' was removed from {service} "
-                        f"(has {len(distinct_dependents)} known dependent(s))"
-                    ),
+                    message=f"Public function '{label}' was removed from {service} {dependents_note}",
                 )
             )
             continue
 
-        new_sig = new_by_name[name]
-        if _params_are_breaking_change(old_sig["params"], new_sig["params"]):
-            alerts.append(
-                Alert(
-                    type="BREAKING_CHANGE",
-                    severity="high",
-                    service=service,
-                    message=(
-                        f"Signature of '{name}' changed in {service}: "
-                        f"{_describe_param_change(old_sig['params'], new_sig['params'])} "
-                        f"(has {len(distinct_dependents)} known dependent(s))"
-                    ),
+        new_sigs = new_groups[key]
+        if len(old_sigs) == 1 and len(new_sigs) == 1:
+            if _params_are_breaking_change(old_sigs[0]["params"], new_sigs[0]["params"]):
+                alerts.append(
+                    Alert(
+                        type="BREAKING_CHANGE",
+                        severity="high",
+                        service=service,
+                        message=(
+                            f"Signature of '{label}' changed in {service}: "
+                            f"{_describe_param_change(old_sigs[0]['params'], new_sigs[0]['params'])} "
+                            f"{dependents_note}"
+                        ),
+                    )
                 )
-            )
+            continue
+
+        # Overloads: an old overload is fine as long as some new overload
+        # is still compatible with it. Flag only overloads that vanished.
+        for old_sig in old_sigs:
+            if all(_params_are_breaking_change(old_sig["params"], n["params"]) for n in new_sigs):
+                alerts.append(
+                    Alert(
+                        type="BREAKING_CHANGE",
+                        severity="high",
+                        service=service,
+                        message=(
+                            f"Overload of '{label}' with {len(old_sig['params'])} parameter(s) "
+                            f"was removed or changed in {service} {dependents_note}"
+                        ),
+                    )
+                )
 
     return alerts
+
+
+def _group_by(signatures: list[dict], key_fn) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for sig in signatures:
+        groups.setdefault(key_fn(sig), []).append(sig)
+    return groups
