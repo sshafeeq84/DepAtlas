@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 173 passing tests. Some gaps are known and listed
+export — all covered by 184 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -78,9 +78,8 @@ depatlas scan --repo . --services services.json --language all
 
 # Exit with status 3 if an alert at or above a severity is raised (status 1
 # means the tool itself failed). This needs a graph database that persists
-# between runs -- history for the diff-based alerts, and other repos' scans
-# for BREAKING_CHANGE dependents -- so it suits a shared or cached database,
-# not a fresh CI runner:
+# between runs, so it suits a shared database; on a fresh CI runner use
+# `depatlas check` instead (see "Using it in CI"):
 depatlas scan --repo . --services services.json --fail-on high
 ```
 
@@ -110,6 +109,7 @@ manifests — are in [Full usage](#full-usage) below.
 | `depatlas snapshots` | List saved snapshots for a repo |
 | `depatlas diff` | Compare two snapshots (`--from`/`--to` or `--last 2`) |
 | `depatlas alerts` | Check the stored graph for all 5 alert types |
+| `depatlas check` | Stateless pull-request check: compare HEAD with its merge-base, no database needed |
 | `depatlas export` | Export the whole graph as JSON or DOT |
 
 Every command supports `--help` for full option details.
@@ -193,6 +193,46 @@ All five SPEC.pdf alert types, checked automatically after every `scan`
 
 Tests: `tests/test_intelligence/test_alerts.py`.
 
+### Using it in CI
+
+A fresh CI runner has no stored history and has only your repo, so `scan`
++ `alerts` cannot see what changed or who depends on you. `depatlas check`
+does the before/after comparison in one run, with no database:
+
+```bash
+depatlas check --base origin/main --services services.json \
+  --graph org-graph.json --fail-on high
+```
+
+It finds the merge-base of `--base` and HEAD, scans that commit and your
+working tree, and reports `BREAKING_CHANGE` and
+`NEW_CROSS_TEAM_DEPENDENCY` for what changed. `org-graph.json` is the
+output of `depatlas export --format json`, produced by a scheduled job
+that scans every repo; it supplies the teams and the services that depend
+on you (which one repo cannot know). Without `--graph` the check still
+runs but says that no alert can fire. Exit status: `0` clean, `3` an alert
+reached `--fail-on`, `1` the check could not run. `--repo` can point at a
+subfolder of a monorepo.
+
+```yaml
+# .github/workflows/depatlas.yml
+on: pull_request
+jobs:
+  depatlas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # check needs history to find the merge-base
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install depatlas
+      - run: depatlas check --base origin/${{ github.base_ref }} --services services.json --graph org-graph.json --fail-on high
+```
+
+The point-in-time alerts (`HIGH_FAN_IN`, `ORPHANED_SERVICE`,
+`UNOWNED_SERVICE`) describe the whole graph rather than a change, so they
+stay in `depatlas alerts`.
+
 ## Full usage
 
 ```bash
@@ -265,10 +305,11 @@ Known gaps, documented in the relevant modules and in
   which are not extracted yet).
 - **Service manifest** — `--services` must be written by hand; inferring
   module-to-service mappings is not built.
-- **CI mode** — `--fail-on` needs a persisted graph database. A
-  stateless `depatlas check --base origin/main` (scan the merge-base and
-  HEAD in one run, load dependents from an org-wide graph export) is
-  planned, not built.
+- **CI graph** — `depatlas check` needs the org-wide graph file from
+  somewhere: a scheduled job that scans every repo and runs
+  `depatlas export`. DepAtlas does not run that job for you, and the file
+  is only as fresh as its last run. `scan --fail-on` still needs a
+  database that persists between runs.
 - **HTTP calls that name no service** — only the hostname of an absolute
   URL is matched against service names. Calls routed through a gateway
   (`https://api.company.com/payments/...`) or made through a base-URL

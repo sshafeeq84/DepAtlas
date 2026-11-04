@@ -1,0 +1,10 @@
+version: 1
+services:
+  - name: payments-service
+    repo: org/payments
+    team: payments-team
+    entry_points:
+      - charge.py
+  - name: auth-service
+    repo: org/auth
+    team: platform-team
