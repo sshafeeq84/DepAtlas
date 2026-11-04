@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from depatlas.fsutil import is_test_path, iter_files, relative_to_repo, warn_skipped
+from depatlas.fsutil import SKIP_DIRS, is_test_path, iter_files, relative_to_repo, warn_skipped
 from depatlas.graph.models import DependencyEdge, PublicSignature
 from depatlas.resolution import drop_self_edges, resolve_endpoint
 
@@ -56,6 +56,11 @@ class DependencyVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         # e.g. `from auth_client.session import verify_token`
+        if node.level > 0:
+            # `from .orders import X` / `from ..x import y`: always this
+            # service's own code, never another service.
+            self.generic_visit(node)
+            return
         module = node.module or ""
         self.imports.append(
             {
@@ -125,8 +130,13 @@ def parse_file(
     file_path: Path,
     known_services: dict[str, str] | None = None,
     known_endpoints: dict[str, str] | None = None,
+    own_modules: frozenset[str] = frozenset(),
 ) -> list[DependencyEdge]:
     """Parse a single Python file and return DependencyEdges it contains.
+
+    own_modules are top-level modules this repo defines itself; importing
+    one is an import of its own code, whatever a service of the same name
+    is called.
 
     known_services maps a top-level module/package name -> service name,
     e.g. {"auth_client": "auth-service"}. Imports that don't resolve
@@ -154,6 +164,8 @@ def parse_file(
 
     for imp in visitor.imports:
         top_level_module = imp["module"].split(".")[0]
+        if top_level_module in own_modules:
+            continue
         target_service = known_services.get(top_level_module)
         if target_service is None:
             continue  # not a known internal service; skip for v1 slice
@@ -188,6 +200,22 @@ def parse_file(
     return edges
 
 
+def _own_top_level_modules(repo_path: Path) -> frozenset[str]:
+    """Modules and packages defined at the top of this repo (or its src/)."""
+    names: set[str] = set()
+    for base in (repo_path, repo_path / "src"):
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            if entry.name.startswith((".", "_")) or entry.name in SKIP_DIRS:
+                continue
+            if entry.is_dir():
+                names.add(entry.name)
+            elif entry.suffix == ".py":
+                names.add(entry.stem)
+    return frozenset(names)
+
+
 def parse_repo(
     repo_path: Path,
     known_services: dict[str, str],
@@ -195,9 +223,10 @@ def parse_repo(
 ) -> list[DependencyEdge]:
     """Walk a repo directory and parse every .py file in it."""
     edges: list[DependencyEdge] = []
+    own_modules = _own_top_level_modules(repo_path)
     for py_file in iter_files(repo_path, "*.py"):
         try:
-            found = parse_file(py_file, known_services, known_endpoints)
+            found = parse_file(py_file, known_services, known_endpoints, own_modules)
         except (SyntaxError, ValueError, UnicodeDecodeError, OSError) as exc:
             # One unparseable file (Python 2, generated code, odd
             # encoding) must not abort the whole scan.

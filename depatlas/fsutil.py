@@ -16,15 +16,33 @@ SKIP_DIRS = frozenset(
 )
 
 
+# Hand-written source is far below this; bigger files are minified bundles,
+# data dumps or generated code, and parsing them is slow and meaningless.
+MAX_SOURCE_BYTES = 2_000_000
+_warned_large: set[str] = set()
+
+
 def iter_files(root: Path, pattern: str = "*") -> Iterator[Path]:
-    """Like root.rglob(pattern) for files, but never descends into SKIP_DIRS."""
+    """Like root.rglob(pattern) for files, but never descends into SKIP_DIRS
+    and skips files over MAX_SOURCE_BYTES (with a warning).
+    """
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
             path = Path(dirpath) / name
             # os.walk lists a broken symlink as a file; opening it would fail.
-            if fnmatch.fnmatch(name, pattern) and path.is_file():
-                yield path
+            if not (fnmatch.fnmatch(name, pattern) and path.is_file()):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if size > MAX_SOURCE_BYTES:
+                if str(path) not in _warned_large:
+                    _warned_large.add(str(path))
+                    warn_skipped(path, OSError(f"file is larger than {MAX_SOURCE_BYTES // 1_000_000} MB"))
+                continue
+            yield path
 
 
 def warn_skipped(path: Path, reason: Exception) -> None:

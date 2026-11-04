@@ -87,17 +87,17 @@ def _resolve_endpoint(url: str, known_endpoints: dict[str, str], known_services:
 def _resolve_module(module_path: str, known_services: dict[str, str]) -> str | None:
     """Resolve a JS/TS module specifier against known internal packages.
 
-    Handles both bare specifiers ("auth_client") and relative/deep paths
-    ("./auth_client/session", "auth_client/session") by stripping any
-    leading "./" or "../" and then checking progressively shorter
+    Handles bare specifiers ("auth_client") and deep paths
+    ("auth_client/session") by checking progressively shorter
     slash-separated prefixes -- the most specific registered namespace
     wins, same idea as the Java parser's dotted-package matching.
+    Relative ("./x", "../x", ".") and absolute ("/x") specifiers are this
+    service's own files, never another service.
     """
-    path = module_path
-    while path.startswith("./") or path.startswith("../"):
-        path = path.split("/", 1)[1] if "/" in path else ""
+    if module_path.startswith((".", "/")):
+        return None
 
-    parts = [p for p in path.split("/") if p]
+    parts = [p for p in module_path.split("/") if p]
     for i in range(len(parts), 0, -1):
         prefix = "/".join(parts[:i])
         if prefix in known_services:

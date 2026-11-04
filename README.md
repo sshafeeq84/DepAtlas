@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 283 passing tests. Some gaps are known and listed
+export — all covered by 323 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -259,19 +259,28 @@ never published (`--allow-partial` overrides). A glob such as
 depatlas check --base origin/main --graph org-graph.json --fail-on high
 ```
 
-It finds the merge-base of `--base` and HEAD, scans that commit and your
-working tree, and reports `BREAKING_CHANGE` and
-`NEW_CROSS_TEAM_DEPENDENCY` for what changed. The graph supplies the teams
-and the services that depend on you, which one repo cannot know. Without
-`--graph` the check still runs but says that no alert can fire. Exit
-status: `0` clean, `3` an alert reached `--fail-on`, `1` the check could
-not run. `--repo` can point at a subfolder of a monorepo.
+It finds the merge-base of `--base` and HEAD, scans both commits the same
+way (`git archive`, so generated or git-ignored files cannot make one side
+look different), and reports `BREAKING_CHANGE` and
+`NEW_CROSS_TEAM_DEPENDENCY` for what changed. Uncommitted edits are not
+checked unless you pass `--working-tree`. The graph supplies the teams and
+the services that depend on you, which one repo cannot know, so `--fail-on`
+requires `--graph`. When the service's folder did not exist at the base
+(new or moved), the graph's existing dependencies for it are the baseline.
+Exit status: `0` clean, `3` an alert reached `--fail-on`, `1` the check
+could not run. `--repo` can point at a subfolder of a monorepo.
 
 Ready-to-copy GitHub Actions workflows for both jobs are in
 [`examples/github-actions/`](https://github.com/sshafeeq84/DepAtlas/tree/main/examples/github-actions):
 `depatlas-nightly.yml` rebuilds the graph and publishes it as a release
 asset, and `depatlas-pr-check.yml` downloads it and runs `check`. Run the
-nightly workflow once by hand before the first pull request.
+nightly workflow once by hand before the first pull request. Two things to
+get right: keep the config repo **private** (the graph lists your services,
+teams and dependencies; the nightly job refuses to publish from a public
+repo), and give pull-request jobs a **separate token that can read only that
+repo**, not the nightly token that can read every repo. Pull requests from
+forks are skipped, and GitHub counts a skipped required check as passing, so
+they are not gated.
 
 The point-in-time alerts (`HIGH_FAN_IN`, `ORPHANED_SERVICE`,
 `UNOWNED_SERVICE`) describe the whole graph rather than a change, so they
@@ -370,6 +379,13 @@ Known gaps, documented in the relevant modules and in
 - **Java parameter rules** — Java parameters have no optional or keyword
   forms, so any change in parameter count is breaking (varargs are not
   modelled separately).
+- **Java constructors** — constructors are not extracted as signatures, so
+  removing or changing a public constructor is not flagged.
+- **Ownership patterns** — CODEOWNERS matching supports files, folders,
+  anchored paths and `*` globs; negation and `**` are not supported, and `*`
+  also crosses folder boundaries (more generous than GitHub).
+- **Large files** — source files over 2 MB are skipped with a warning
+  (minified bundles, generated code).
 - **Dependents of a breaking change** — every dependent is counted, not
   only those that import the changed code (HTTP callers depend on routes,
   which are not extracted yet).
