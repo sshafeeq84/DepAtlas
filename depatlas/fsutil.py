@@ -41,6 +41,8 @@ LANGUAGE_EXTENSIONS = {
     ".mjs": "javascript",
     ".cjs": "javascript",
     ".ts": "javascript",
+    ".mts": "javascript",
+    ".cts": "javascript",
     ".tsx": "javascript",
 }
 

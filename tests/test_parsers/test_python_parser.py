@@ -92,7 +92,7 @@ def test_extract_signatures_finds_module_level_and_method_signatures(tmp_path):
 
     assert names == {"public_func", "public_method"}
     public_func = next(s for s in signatures if s.name == "public_func")
-    assert public_func.params == [{"name": "a", "type": None}, {"name": "b", "type": None}]
+    assert [p["name"] for p in public_func.params] == ["a", "b"]
     assert public_func.service == "payments-service"
 
 
@@ -128,9 +128,9 @@ def test_extract_signatures_captures_type_annotations(tmp_path):
 
     signatures = extract_signatures(tmp_path, "payments-service")
 
-    assert signatures[0].params == [
-        {"name": "amount", "type": "int"},
-        {"name": "currency", "type": "str"},
+    assert [(p["name"], p["type"]) for p in signatures[0].params] == [
+        ("amount", "int"),
+        ("currency", "str"),
     ]
 
 
@@ -141,4 +141,4 @@ def test_extract_signatures_untyped_params_get_none_type(tmp_path):
 
     signatures = extract_signatures(tmp_path, "payments-service")
 
-    assert signatures[0].params == [{"name": "amount", "type": None}]
+    assert [(p["name"], p["type"]) for p in signatures[0].params] == [("amount", None)]

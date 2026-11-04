@@ -1,6 +1,6 @@
 [project]
 name = "depatlas"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reads your codebase and builds a living dependency graph across services, teams, and repositories."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,7 +54,8 @@ dependencies = [
     "click>=8.1",
     "tree-sitter>=0.23,<0.27",
     "tree-sitter-java>=0.23",
-    "esprima>=4.0",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
     "requests>=2.28",
     "pyyaml>=6.0",
 ]

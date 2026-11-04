@@ -209,15 +209,37 @@ def parse_repo(
     return drop_self_edges(edges)
 
 
-def _param_info(arg: ast.arg) -> dict:
-    """Render one function parameter as {"name", "type"}. `type` is the
-    unparsed annotation expression (e.g. "int", "Optional[str]") if the
-    parameter is annotated, else None -- most real-world Python code
-    mixes annotated and unannotated functions, so this has to degrade
-    gracefully rather than requiring full type coverage.
+def _param_info(arg: ast.arg, kind: str, optional: bool) -> dict:
+    """Render one function parameter as {"name", "type", "kind", "optional"}.
+
+    `type` is the unparsed annotation (e.g. "int", "Optional[str]") if the
+    parameter is annotated, else None -- most real-world Python code mixes
+    annotated and unannotated functions, so this has to degrade gracefully.
+    `kind` is Python's own parameter kind: positional_only (before `/`),
+    positional_or_keyword, keyword_only (after `*`), var_positional
+    (`*args`) or var_keyword (`**kwargs`). `optional` is True when the
+    caller may omit it: it has a default, or it is `*args`/`**kwargs`.
     """
     type_str = ast.unparse(arg.annotation) if arg.annotation is not None else None
-    return {"name": arg.arg, "type": type_str}
+    return {"name": arg.arg, "type": type_str, "kind": kind, "optional": optional}
+
+
+def _signature_params(args: ast.arguments) -> list[dict]:
+    """All parameters of a function, in declaration order, with their kinds."""
+    params: list[dict] = []
+    positional = list(args.posonlyargs) + list(args.args)
+    # `defaults` belongs to the *last* len(defaults) positional parameters.
+    first_default = len(positional) - len(args.defaults)
+    for index, arg in enumerate(positional):
+        kind = "positional_only" if index < len(args.posonlyargs) else "positional_or_keyword"
+        params.append(_param_info(arg, kind, optional=index >= first_default))
+    if args.vararg is not None:
+        params.append(_param_info(args.vararg, "var_positional", optional=True))
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        params.append(_param_info(arg, "keyword_only", optional=default is not None))
+    if args.kwarg is not None:
+        params.append(_param_info(args.kwarg, "var_keyword", optional=True))
+    return params
 
 
 def _collect_public_functions(node: ast.AST, results: list[dict], prefix: str = "") -> None:
@@ -238,7 +260,7 @@ def _collect_public_functions(node: ast.AST, results: list[dict], prefix: str = 
                     {
                         "name": child.name,
                         "qualified": f"{prefix}{child.name}",
-                        "params": [_param_info(a) for a in child.args.args],
+                        "params": _signature_params(child.args),
                         "line": child.lineno,
                     }
                 )

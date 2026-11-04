@@ -9,7 +9,7 @@ only job is "get the code onto disk," matching the "Repository Fetcher
 Deliberately uses the REST API + zip download rather than shelling out to
 `git clone`, so this project has no dependency on git being installed or
 on PATH -- the same "keep runtime dependencies minimal" principle behind
-choosing esprima over a Node-based JS parser.
+choosing tree-sitter over a Node-based JS parser.
 """
 
 from __future__ import annotations

@@ -24,7 +24,7 @@ depatlas/
 ├── depatlas/
 │   ├── cli/            # CLI entry points (click)
 │   ├── connectors/      # GitHub, CodeCommit -- get code onto local disk
-│   ├── parsers/          # Language parsers (Python/ast, Java/tree-sitter, JS-TS/esprima)
+│   ├── parsers/          # Language parsers (Python/ast, Java/tree-sitter, JS-TS/tree-sitter)
 │   ├── graph/            # Data model, graph builder, SQLite store
 │   ├── ownership/        # CODEOWNERS + depatlas.yaml manifest resolution
 │   ├── intelligence/      # Diff engine, alerts
@@ -67,11 +67,8 @@ medium/low depending on how much guessing is involved).
 A few things are deliberately out of scope for v1, documented in the
 relevant module's docstring and in the README:
 
-- **Full TypeScript syntax** — the JS/TS parser uses `esprima`, which
-  parses JavaScript but not TypeScript-specific syntax (type
-  annotations, interfaces). A `.ts` file using real TS syntax is
-  skipped with a warning, not crashed on. Moving the JS/TS parser to
-  `tree-sitter` (as Java already uses) would fix this.
+- **CommonJS exports** — the JS/TS parser reads ES-module exports only
+  (`module.exports = ...` is not recognised for signatures).
 - **`boto3`/`grpc` detection in the Python parser**, and Java's
   Maven/Gradle shared-library detection — spec'd, not yet built.
 

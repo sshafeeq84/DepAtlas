@@ -61,14 +61,18 @@ class PublicSignature:
     (SPEC.pdf section 10) to compare a service's public interface across
     two scans.
 
-    `params` is a list of {"name": str, "type": str | None} dicts, one
-    per parameter, in declared order -- not just a list of names. The
-    type is None when the language/parser can't determine one (e.g. an
-    untyped Python parameter, or any JS/TS parameter, since esprima
-    doesn't parse TypeScript's type annotations). Capturing type
-    alongside position is what lets BREAKING_CHANGE tell a real type
-    change apart from a harmless parameter rename -- see
-    depatlas/intelligence/alerts.py's check_breaking_changes.
+    `params` is a list of dicts, one per parameter, in declared order:
+    {"name", "type", "kind", "optional"}. `type` is None when it is not
+    written in the source (an unannotated Python or plain-JavaScript
+    parameter). `kind` is Python's parameter kind (positional_only,
+    positional_or_keyword, keyword_only, var_positional, var_keyword) or,
+    for JavaScript/TypeScript, "positional" / "var_positional". `optional`
+    is True when a caller may omit the argument (a default value, `b?:`,
+    `*args`, a rest parameter). Java parameters carry only name and type,
+    as do snapshots saved by versions before 0.3.0. Together these let
+    BREAKING_CHANGE tell adding an optional parameter (safe) from adding a
+    required one, or renaming a keyword-capable parameter -- see
+    depatlas/intelligence/alerts.py.
     """
 
     service: str

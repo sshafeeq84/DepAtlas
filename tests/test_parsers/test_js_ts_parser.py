@@ -27,8 +27,9 @@ def test_finds_import_and_require():
     import_edges = [e for e in edges if e.type == "import"]
 
     # `import authClient from "auth_client"` and
-    # `require("auth_client/session")` both resolve to auth-service.
-    assert len(import_edges) == 2
+    # `require("auth_client/session")` in charge.js, plus the import in
+    # typed.ts (real TypeScript, parsed by tree-sitter) resolve to auth-service.
+    assert len(import_edges) == 3
     assert all(e.source_service == "payments-service" for e in import_edges)
     assert all(e.target_service == "auth-service" for e in import_edges)
     assert all(e.confidence == "high" for e in import_edges)
@@ -70,24 +71,56 @@ def test_unregistered_package_json_dependency_is_ignored():
 
 
 def test_total_edge_count():
-    # 2 imports + 1 fetch + 1 axios + 1 package.json dep = 5
-    # (typed.ts is present in the fixture repo too, but contains genuine
-    # TypeScript syntax esprima can't parse -- it must be skipped rather
-    # than crashing the scan or contributing any edges.)
+    # 3 imports (2 in charge.js, 1 in typed.ts) + 1 fetch + 1 axios
+    # + 1 package.json dep = 6
     edges = _scan()
-    assert len(edges) == 5
+    assert len(edges) == 6
 
 
-def test_typescript_only_syntax_is_skipped_not_crashed(capsys):
+def test_typescript_syntax_is_parsed_not_skipped(capsys):
     from depatlas.parsers.js_ts_parser import parse_file
 
     typed_file = FIXTURE_REPO / "src" / "typed.ts"
     edges = parse_file(typed_file, KNOWN_SERVICES, KNOWN_ENDPOINTS)
 
-    assert edges == []
-    captured = capsys.readouterr()
-    assert "skipping" in captured.err
-    assert "typed.ts" in captured.err
+    assert [(e.type, e.target_service) for e in edges] == [("import", "auth-service")]
+    assert capsys.readouterr().err == ""
+
+
+def test_syntax_errors_still_yield_the_parts_that_parsed(tmp_path, capsys):
+    from depatlas.parsers.js_ts_parser import parse_file
+
+    f = tmp_path / "broken.ts"
+    f.write_text('import a from "auth_client";\nfunction ((( {\n')
+
+    edges = parse_file(f, KNOWN_SERVICES, KNOWN_ENDPOINTS)
+
+    assert len(edges) == 1
+    assert "syntax errors" in capsys.readouterr().err
+
+
+def test_reexports_and_dynamic_imports_are_dependencies(tmp_path):
+    from depatlas.parsers.js_ts_parser import parse_file
+
+    f = tmp_path / "m.js"
+    f.write_text(
+        'export * from "auth_client";\n'
+        'export { x } from "auth_client/session";\n'
+        'const lazy = () => import("auth_client");\n'
+    )
+    assert len(parse_file(f, KNOWN_SERVICES, KNOWN_ENDPOINTS)) == 3
+
+
+def test_plain_string_and_template_urls_but_not_computed_ones(tmp_path):
+    from depatlas.parsers.js_ts_parser import parse_file
+
+    f = tmp_path / "m.js"
+    f.write_text(
+        'fetch(`http://auth.internal/a`);\n'
+        'fetch(`http://auth.internal/${id}`);\n'
+        'fetch("http://" + host);\n'
+    )
+    assert len(parse_file(f, KNOWN_SERVICES, KNOWN_ENDPOINTS)) == 1
 
 
 # --- extract_signatures ---
@@ -110,9 +143,9 @@ def test_extract_signatures_finds_exported_functions_only(tmp_path):
 
     assert len(signatures) == 1
     assert signatures[0].name == "verifyToken"
-    assert signatures[0].params == [
-        {"name": "token", "type": None},
-        {"name": "options", "type": None},
+    assert [(p["name"], p["type"], p["kind"], p["optional"]) for p in signatures[0].params] == [
+        ("token", None, "positional", False),
+        ("options", None, "positional", False),
     ]
 
 
@@ -127,7 +160,4 @@ def test_extract_signatures_finds_export_default_function(tmp_path):
 
     assert len(signatures) == 1
     assert signatures[0].name == "mainHandler"
-    assert signatures[0].params == [
-        {"name": "req", "type": None},
-        {"name": "res", "type": None},
-    ]
+    assert [p["name"] for p in signatures[0].params] == ["req", "res"]

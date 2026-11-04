@@ -33,12 +33,12 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 184 passing tests. Some gaps are known and listed
+export — all covered by 232 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
 |---|---|
-| **Languages** | Python (`ast`), Java (`tree-sitter`), JavaScript/TypeScript (`esprima`) |
+| **Languages** | Python (`ast`), Java (`tree-sitter`), JavaScript/TypeScript (`tree-sitter`) |
 | **Code sources** | Local directory, GitHub (REST API), AWS CodeCommit (`boto3`) |
 | **Persistence** | SQLite-backed graph store; every scan saves an immutable snapshot |
 | **Ownership** | CODEOWNERS, with a `depatlas.yaml` manifest fallback |
@@ -131,9 +131,14 @@ detection.
   package namespaces (high); `@FeignClient` annotations, an explicit
   dependency declaration (high); RestTemplate/WebClient-style calls
   (medium/low, same scheme as Python).
-- **JavaScript/TypeScript** (`esprima`): `import`/`require(...)` (high);
+- **JavaScript/TypeScript** (`tree-sitter`, with the JavaScript,
+  TypeScript and TSX grammars, so real TypeScript parses):
+  `import`/`export ... from`/`require(...)`/`import(...)` (high);
   `fetch`/`axios.<method>`/`got.<method>` calls (medium/low);
-  `package.json` dependencies as `shared_library` edges (high).
+  `package.json` dependencies as `shared_library` edges (high). Public
+  signatures are exported functions, exported arrow functions, `export {
+  f }` of local functions and the public methods of exported classes,
+  with TypeScript types, optional (`?`/default) and rest parameters.
 
 Tests: `tests/test_parsers/`.
 
@@ -178,12 +183,17 @@ Tests: `tests/test_ownership/`.
 All five SPEC.pdf alert types, checked automatically after every `scan`
 (`--no-alerts` to disable) or on demand via `depatlas alerts`:
 
-- **`BREAKING_CHANGE`** (high) — a public function removed, its
-  parameter count changed, or a parameter's type changed at the same
-  position (only when both old and new have a known type) — on a
-  service with at least one known dependent. A pure parameter *rename*
-  is deliberately not flagged, since most real callers invoke
-  positionally.
+- **`BREAKING_CHANGE`** (high) — a public function removed, or changed in
+  a way that breaks an existing caller, on a service with at least one
+  known dependent. For Python and JavaScript/TypeScript that means: a
+  parameter removed or moved, a new *required* parameter, an optional
+  parameter that became required, a changed type (only when both sides
+  have one), `*args`/`**kwargs` removed, and in Python a parameter that
+  callers may pass by keyword being renamed or made positional-only or
+  keyword-only. Adding an *optional* parameter, or renaming a
+  positional-only or JavaScript parameter, is safe and not flagged. For
+  Java, a different parameter count or a changed type is breaking and a
+  rename is not.
 - **`NEW_CROSS_TEAM_DEPENDENCY`** (medium) — a new edge crossing a team
   boundary.
 - **`HIGH_FAN_IN`** (medium) — a service's distinct dependent count
@@ -292,14 +302,18 @@ tests had missed (a crash on modern Java syntax and undetected
 Known gaps, documented in the relevant modules and in
 [`docs/CONTRIBUTING.md`](https://github.com/sshafeeq84/DepAtlas/blob/main/docs/CONTRIBUTING.md):
 
-- **Full TypeScript syntax** — `esprima` parses JavaScript, not
-  TypeScript-specific syntax (type annotations, interfaces). A `.ts` file
-  using real TS syntax is skipped with a warning, not crashed on. Moving
-  the JS/TS parser to `tree-sitter` (as Java already uses) would fix this.
-- **Python signature rules** — a parameter's kind (keyword-only, default
-  value, `*args`/`**kwargs`) is not modelled yet, so adding an optional
-  parameter can be flagged as breaking, and a keyword-argument rename is
-  not flagged.
+- **Newest TypeScript syntax** — the TypeScript grammar does not yet
+  recognise a few recent forms (for example `export type * from './x'`).
+  Such a file gets a warning and contributes everything else that parsed.
+- **JavaScript exports** — CommonJS exports (`module.exports = ...`) are
+  not recognised, only ES-module exports. A function reachable only
+  through a re-export from another module is not followed.
+- **Snapshots from before 0.3.0** — parameters carry no kind, so the first
+  comparison against such a snapshot reports removed functions but not
+  parameter changes. Scan once and later comparisons are exact.
+- **Java parameter rules** — Java parameters have no optional or keyword
+  forms, so any change in parameter count is breaking (varargs are not
+  modelled separately).
 - **Dependents of a breaking change** — every dependent is counted, not
   only those that import the changed code (HTTP callers depend on routes,
   which are not extracted yet).
@@ -337,7 +351,7 @@ depatlas/
 │   ├── cli/            # CLI entry point (click)
 │   ├── connectors/       # GitHub, AWS CodeCommit
 │   ├── parsers/          # python_parser (ast), java_parser (tree-sitter),
-│   │                       js_ts_parser (esprima)
+│   │                       js_ts_parser (tree-sitter)
 │   ├── graph/             # Models, graph builder, SQLite store
 │   ├── ownership/          # CODEOWNERS + depatlas.yaml manifest
 │   ├── intelligence/        # Diff engine, alerts
