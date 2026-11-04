@@ -126,7 +126,9 @@ def _fetch(repo: OrgRepo, cache_dir: Path, state: dict) -> tuple[Path, str]:
         state.setdefault("token", get_token())
         owner, name = repo.target.split("/", 1)
         return fetch_github_repo(owner, name, state["token"], cache_dir, repo.ref), f"github:{repo.target}"
-    client = state.setdefault(("cc", repo.region), get_codecommit_client(repo.region))
+    if ("cc", repo.region) not in state:  # one client per region, not one per repo
+        state[("cc", repo.region)] = get_codecommit_client(repo.region)
+    client = state[("cc", repo.region)]
     specifier = repo.ref if repo.ref != "HEAD" else ""
     return fetch_codecommit_repo(repo.target, client, cache_dir, specifier), f"codecommit:{repo.target}"
 

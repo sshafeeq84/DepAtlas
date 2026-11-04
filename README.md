@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 269 passing tests. Some gaps are known and listed
+export — all covered by 283 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -290,7 +290,14 @@ The folder name is the last resort. URLs like `http://payments-service:8080/`
 or `lb://payments-service` resolve to a service of that name. Generic or
 standard-library import names (`utils`, `config`, `json`...) are never
 registered, and an import name claimed by two services is dropped with a
-warning. Use `--name`, or write a `--services` file, to override anything.
+warning. A service whose own name is generic (`email`, `config`) is still
+found by URL and hostname, but is never matched by a bare `import email`.
+Profile files such as `application-dev.yml` never decide a Spring service's name.
+
+If `scan-all` renames a repo (`name:` in the config), `check` finds it again by
+`GITHUB_REPOSITORY` when run in GitHub Actions; elsewhere pass `--name`. `check`
+warns when the name it uses is not in the registry, because dependents are looked
+up by that name. Use `--name`, or write a `--services` file, to override anything.
 
 ## Full usage
 
