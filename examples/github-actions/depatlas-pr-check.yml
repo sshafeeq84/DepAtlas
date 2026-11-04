@@ -11,6 +11,8 @@ on: pull_request
 
 jobs:
   depatlas:
+    # Pull requests from forks get no secrets, so they cannot download the graph.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,4 +27,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEPATLAS_READ_TOKEN }}
         run: gh release download org-graph --repo YOUR-ORG/depatlas-config --pattern org-graph.json
       # In a monorepo add: --repo services/payments
-      - run: depatlas check --base origin/${{ github.base_ref }} --graph org-graph.json --fail-on high
+      - name: Check the change
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: depatlas check --base "origin/$BASE_REF" --graph org-graph.json --fail-on high

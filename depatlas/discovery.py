@@ -23,6 +23,7 @@ claimed by two services is dropped (it cannot identify either).
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import re
@@ -47,6 +48,7 @@ GENERIC_IMPORT_NAMES = frozenset(
         "main", "models", "api", "web", "server", "client", "base", "service", "services",
         "scripts", "tools", "docs", "migrations", "settings", "setup", "conftest", "manage",
         "types", "index", "shared", "helpers", "handlers", "routes", "db", "database",
+        "lambda_function", "handler", "function",
     }
 )
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
@@ -86,12 +88,48 @@ def _clean(value: object) -> str | None:
     return value
 
 
+def _spring_name_from_doc(doc: object) -> str | None:
+    """`spring.application.name` from one parsed YAML document, nested
+    (`spring: {application: {name: x}}`) or flat (`spring.application.name: x`).
+    A document that only applies under some profile is ignored.
+    """
+    if not isinstance(doc, dict):
+        return None
+    if doc.get("spring.config.activate.on-profile") or doc.get("spring.profiles"):
+        return None
+    spring = doc.get("spring")
+    if isinstance(spring, dict):
+        activate = spring.get("config", {})
+        if isinstance(activate, dict) and activate.get("activate"):
+            return None
+        if spring.get("profiles"):
+            return None
+        app = spring.get("application")
+        if isinstance(app, dict):
+            name = _clean(app.get("name"))
+            if name:
+                return name
+    return _clean(doc.get("spring.application.name"))
+
+
+def _spring_config_files(resources: Path) -> list[Path]:
+    """bootstrap.* and application.* first, then profile files
+    (application-dev.yml...), which only override the base for one profile
+    and so must never decide the service's name.
+    """
+    files = [f for f in resources.iterdir() if f.is_file()]
+    base = [f for f in files if f.stem in ("bootstrap", "application")]
+    profiles = [f for f in files if f.stem.startswith(("bootstrap-", "application-"))]
+    return sorted(base, key=lambda f: (f.stem != "bootstrap", f.name)) + sorted(
+        profiles, key=lambda f: f.name
+    )
+
+
 def _spring_application_name(path: Path) -> str | None:
     resources = path / "src" / "main" / "resources"
     if not resources.is_dir():
         return None
-    candidates = sorted(resources.glob("bootstrap*")) + sorted(resources.glob("application*"))
-    for file in candidates:
+    for file in _spring_config_files(resources):
         try:
             text = file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -102,12 +140,9 @@ def _spring_application_name(path: Path) -> str | None:
             except yaml.YAMLError:
                 continue
             for doc in documents:
-                if isinstance(doc, dict):
-                    spring = doc.get("spring")
-                    app = spring.get("application") if isinstance(spring, dict) else None
-                    name = _clean(app.get("name")) if isinstance(app, dict) else None
-                    if name:
-                        return name
+                name = _spring_name_from_doc(doc)
+                if name:
+                    return name
         elif file.suffix == ".properties":
             match = re.search(r"^\s*spring\.application\.name\s*[=:]\s*(.+?)\s*$", text, re.M)
             name = _clean(match.group(1)) if match else None
@@ -122,7 +157,10 @@ def _pom(path: Path) -> tuple[str | None, bool]:
     if not pom.is_file():
         return None, False
     try:
-        root = ET.parse(pom).getroot()
+        data = pom.read_bytes()
+        if b"<!ENTITY" in data:  # entity expansion: never parse these
+            return None, False
+        root = ET.fromstring(data)
     except (ET.ParseError, OSError):
         return None, False
     artifact = None
@@ -188,18 +226,19 @@ def _python_name(path: Path) -> str | None:
             return name
     cfg = path / "setup.cfg"
     if cfg.is_file():
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
         try:
-            match = re.search(
-                r"^\[metadata\].*?^name\s*=\s*(\S+)", cfg.read_text(encoding="utf-8"), re.M | re.S
-            )
-        except (OSError, UnicodeDecodeError):
-            match = None
-        if match:
-            return _clean(match.group(1))
+            parser.read_string(cfg.read_text(encoding="utf-8"))
+            name = _clean(parser.get("metadata", "name", fallback=None))
+        except (OSError, UnicodeDecodeError, configparser.Error):
+            name = None
+        if name:
+            return name
     setup = path / "setup.py"
     if setup.is_file():
         try:
-            match = re.search(r"\bname\s*=\s*['\"]([^'\"]+)['\"]", setup.read_text(encoding="utf-8"))
+            text = setup.read_text(encoding="utf-8")
+            match = re.search(r"\bname\s*=\s*['\"]([^'\"]+)['\"]", text[max(text.find("setup("), 0):])
         except (OSError, UnicodeDecodeError):
             match = None
         if match:
@@ -403,6 +442,17 @@ def load_registry(path: Path) -> list[dict]:
     return entries
 
 
+def _name_key(name: str) -> str:
+    """The key a service's own name goes under in the manifest. A name like
+    "email" or "config" would otherwise turn every `import email` in other
+    code into a dependency, so such names get a key no import can equal;
+    the service still takes part in host-name matching, which reads values.
+    """
+    if name.lower() in GENERIC_IMPORT_NAMES or name in _STDLIB:
+        return f"service:{name}"
+    return name
+
+
 def build_manifest(
     self_name: str, registry: list[dict]
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:
@@ -432,7 +482,7 @@ def build_manifest(
         name = entry["name"]
         if name == self_name:
             continue
-        known_services.setdefault(name, name)
+        known_services.setdefault(_name_key(name), name)
         known_endpoints[f"://{name}"] = name
     return known_services, known_endpoints, warnings
 
@@ -443,6 +493,20 @@ def find_codeowners(repo_path: Path) -> Path | None:
         candidate = Path(repo_path) / location
         if candidate.is_file():
             return candidate
+    return None
+
+
+def _registry_name_for_ci_repo(registry: list[dict]) -> str | None:
+    """In GitHub Actions, the registry entry for the repository being built
+    (`scan-all` records GitHub repos as `github:owner/repo`), so a renamed
+    service (config `name:`) is still recognised without `--name`.
+    """
+    repository = os.environ.get("GITHUB_REPOSITORY", "").strip().lower()
+    if not repository:
+        return None
+    for entry in registry:
+        if str(entry.get("path", "")).lower() == f"github:{repository}":
+            return entry["name"]
     return None
 
 
@@ -468,12 +532,25 @@ def resolve_manifest(
     if services_path is not None and registry_path is None and name is None:
         return explicit, explicit_endpoints  # the original, fully explicit behaviour
 
+    registry = load_registry(registry_path) if registry_path is not None else []
+
     self_name = name or explicit.get("__self__")
+    if not self_name:
+        self_name = _registry_name_for_ci_repo(registry)
+        if self_name:
+            log(f"Service name: {self_name} (matched {os.environ.get('GITHUB_REPOSITORY')} in the registry)")
     if not self_name:
         self_name, source = infer_service_name(repo_path)
         log(f"Service name: {self_name} (from {source}; override with --name)")
+    if registry and self_name not in {e["name"] for e in registry}:
+        known = sorted(e["name"] for e in registry)
+        shown = ", ".join(known[:8]) + (", ..." if len(known) > 8 else "")
+        log(
+            f"warning: '{self_name}' is not in the registry ({shown}). Other services' "
+            "dependents are looked up by this name, so if the scan config gives this "
+            "repo a different 'name:', pass --name."
+        )
 
-    registry = load_registry(registry_path) if registry_path is not None else []
     known_services, known_endpoints, warnings = build_manifest(self_name, registry)
     for warning in warnings:
         log(f"warning: {warning}")

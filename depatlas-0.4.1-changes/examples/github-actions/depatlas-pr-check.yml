@@ -1,0 +1,33 @@
+# Put this in EVERY service repo. On each pull request it compares your
+# change with its base branch and fails the job on a breaking change to a
+# function other services depend on (exit status 3).
+#
+# Setup: save the same read-only token as the secret DEPATLAS_READ_TOKEN
+# (it also needs read access to the repo that holds the org-graph release),
+# and replace YOUR-ORG/depatlas-config below.
+name: DepAtlas check
+
+on: pull_request
+
+jobs:
+  depatlas:
+    # Pull requests from forks get no secrets, so they cannot download the graph.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # check needs history to find the merge-base
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install depatlas
+      - name: Download the org graph
+        env:
+          GH_TOKEN: ${{ secrets.DEPATLAS_READ_TOKEN }}
+        run: gh release download org-graph --repo YOUR-ORG/depatlas-config --pattern org-graph.json
+      # In a monorepo add: --repo services/payments
+      - name: Check the change
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: depatlas check --base "origin/$BASE_REF" --graph org-graph.json --fail-on high
