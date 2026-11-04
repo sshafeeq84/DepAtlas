@@ -19,18 +19,18 @@ All five alert types are now implemented:
     known dependents," so a signature change on a service nobody calls
     doesn't trigger this).
 
-BREAKING_CHANGE uses full signature identity, not just function name --
-see `_params_are_breaking_change` below for the exact rules, but in
-short: a function is matched by its qualified identity (repo-relative
-file, enclosing class, name; overloads are compared as a group; snapshots
-from older versions fall back to the bare name); once matched, a *parameter count*
-change is always breaking, a *type* change at a shared position is
-breaking only when both sides have a known type (Java always does;
-Python only when annotated; JS/TS never, since esprima can't see
-TypeScript's type annotations), and a pure *parameter rename* (same
-position, same type-or-absence-of-type) is deliberately NOT flagged --
-most real callers invoke positionally, so a rename alone doesn't break
-them.
+BREAKING_CHANGE uses full signature identity, not just function name: a
+function is matched by its qualified identity (repo-relative file,
+enclosing class, name; overloads are compared as a group; snapshots from
+older versions fall back to the bare name). Once matched, parameters are
+compared by what an existing caller could be doing -- see
+`_kinded_problems` for the rules. Python and JavaScript/TypeScript record
+each parameter's kind and whether it is optional, so adding an optional
+parameter is not flagged but adding a required one is, and a Python
+parameter that callers may pass by keyword cannot be renamed. Types are
+compared only when both sides have one (Java always; Python when
+annotated; TypeScript when annotated). Java parameters carry no kind, so
+there a different count is breaking and a rename is not.
 
 Edges that come from test files (`from_test`) are real dependencies but are
 ignored by every alert here: a test importing another service's client must
@@ -163,51 +163,131 @@ def check_unowned_service(service: str, team: str | None) -> list[Alert]:
     return []
 
 
-def _params_are_breaking_change(old_params: list[dict], new_params: list[dict]) -> bool:
-    """Decide whether one function's parameter list changed in a way
-    that would break existing callers, given full signature identity
-    (position, count, and type where known) -- not just "is the list
-    different."
+_POSITIONAL_KINDS = {"positional_only", "positional_or_keyword", "positional"}
+_SELF_NAMES = {"self", "cls"}
 
-    - A different parameter count is always breaking (a caller passing
-      the old number of arguments would fail).
-    - At any shared position, a type change is breaking *only* when
-      both the old and new versions have a known type and they differ.
-      If either side has no type info (untyped Python, or any JS/TS
-      parameter -- esprima can't see TypeScript's annotations), there's
-      nothing concrete to compare, so it's not flagged: annotating a
-      previously-untyped parameter, or removing an annotation, isn't by
-      itself a behavior change.
-    - A parameter *name* changing alone (same position, same type or
-      same "no type" state) is NOT breaking -- most real callers invoke
-      positionally, so a rename alone doesn't break them. This is a
-      deliberate, narrower definition of "breaking" than pure list
-      inequality; see check_breaking_changes below for where this is used.
+
+def _has_kinds(params: list[dict]) -> bool:
+    return bool(params) and all("kind" in p for p in params)
+
+
+def _type_changed(old: dict, new: dict) -> bool:
+    """A type change counts only when both sides have a known type."""
+    return bool(old.get("type")) and bool(new.get("type")) and old["type"] != new["type"]
+
+
+def _legacy_problems(old_params: list[dict], new_params: list[dict]) -> list[str]:
+    """Rules for parameters without kinds (Java, and snapshots saved by
+    older versions): a different count is breaking; at any shared position a
+    type change is breaking only when both types are known; a rename alone is
+    not.
     """
     if len(old_params) != len(new_params):
-        return True
+        return [f"parameter count changed from {len(old_params)} to {len(new_params)}"]
+    return [
+        f"param {i} ('{o['name']}'): {o.get('type')} -> {n.get('type')}"
+        for i, (o, n) in enumerate(zip(old_params, new_params))
+        if _type_changed(o, n)
+    ]
 
-    for old_param, new_param in zip(old_params, new_params):
-        old_type = old_param.get("type")
-        new_type = new_param.get("type")
-        if old_type is not None and new_type is not None and old_type != new_type:
-            return True
 
-    return False
+def _kinded_problems(old: list[dict], new: list[dict]) -> list[str]:
+    """Rules for parameters that carry a kind and an `optional` flag
+    (Python, JavaScript/TypeScript). In plain terms, an existing caller
+    breaks when:
+
+    - a parameter it may pass is gone, or moved to another position;
+    - a new parameter is required (a new optional one is fine);
+    - an optional parameter became required;
+    - a parameter's type changed (when both types are known);
+    - a Python parameter that could be passed by keyword was renamed, made
+      positional-only, or made keyword-only (positional callers break);
+    - `*args` / `**kwargs` was removed.
+    Renaming a positional-only parameter, or any JavaScript parameter, is
+    safe: callers cannot refer to it by name.
+    """
+    problems: list[str] = []
+    old_pos = [p for p in old if p["kind"] in _POSITIONAL_KINDS]
+    new_pos = [p for p in new if p["kind"] in _POSITIONAL_KINDS]
+    old_by_name = {p["name"]: p for p in old}
+    new_by_name = {p["name"]: p for p in new}
+    new_pos_names = [p["name"] for p in new_pos]
+    new_var_positional = any(p["kind"] == "var_positional" for p in new)
+    new_var_keyword = any(p["kind"] == "var_keyword" for p in new)
+
+    for i, o in enumerate(old_pos):
+        name = o["name"]
+        if i < len(new_pos):
+            n = new_pos[i]
+            if name != n["name"] and name not in _SELF_NAMES:
+                if o["kind"] != "positional_only" and name in new_pos_names:
+                    problems.append(
+                        f"parameter '{name}' moved from position {i} to {new_pos_names.index(name)}"
+                    )
+                elif o["kind"] == "positional_or_keyword" and name not in new_by_name:
+                    problems.append(
+                        f"parameter '{name}' renamed to '{n['name']}' (callers passing it by keyword break)"
+                    )
+            if _type_changed(o, n):
+                problems.append(f"param {i} ('{name}'): {o['type']} -> {n['type']}")
+            if o["kind"] == "positional_or_keyword" and n["kind"] == "positional_only":
+                problems.append(f"parameter '{name}' is now positional-only")
+            if o["optional"] and not n["optional"] and o["kind"] != "var_positional":
+                problems.append(f"parameter '{name}' is now required")
+        else:
+            moved = new_by_name.get(name)
+            if o["kind"] == "positional_or_keyword" and moved and moved["kind"] == "keyword_only":
+                problems.append(f"parameter '{name}' is now keyword-only")
+            elif not (new_var_positional and (o["kind"] != "positional_or_keyword" or new_var_keyword)):
+                problems.append(f"parameter '{name}' was removed")
+
+    for n in new_pos[len(old_pos):]:
+        if n["name"] not in old_by_name and not n["optional"]:
+            problems.append(f"new required parameter '{n['name']}'")
+
+    for o in (p for p in old if p["kind"] == "keyword_only"):
+        n = new_by_name.get(o["name"])
+        if n is None:
+            if not new_var_keyword:
+                problems.append(f"keyword-only parameter '{o['name']}' was removed")
+        elif n["kind"] not in ("keyword_only", "positional_or_keyword"):
+            problems.append(f"parameter '{o['name']}' can no longer be passed by keyword")
+        else:
+            if _type_changed(o, n):
+                problems.append(f"parameter '{o['name']}': {o['type']} -> {n['type']}")
+            if o["optional"] and not n["optional"]:
+                problems.append(f"parameter '{o['name']}' is now required")
+    for n in (p for p in new if p["kind"] == "keyword_only"):
+        if n["name"] not in old_by_name and not n["optional"]:
+            problems.append(f"new required keyword-only parameter '{n['name']}'")
+
+    for kind, label in (("var_positional", "*args"), ("var_keyword", "**kwargs")):
+        if any(p["kind"] == kind for p in old) and not any(p["kind"] == kind for p in new):
+            problems.append(f"{label} was removed")
+
+    return list(dict.fromkeys(problems))
+
+
+def _param_problems(old_params: list[dict], new_params: list[dict]) -> list[str]:
+    """What, if anything, about a changed parameter list breaks callers."""
+    old_k, new_k = _has_kinds(old_params), _has_kinds(new_params)
+    if old_params and new_params and old_k != new_k:
+        # One side was saved by an older version without kinds: the two
+        # lists are not comparable, so judge neither (a removed function is
+        # still reported). Re-scan once and later comparisons are exact.
+        return []
+    if old_k or new_k:
+        return _kinded_problems(old_params, new_params)
+    return _legacy_problems(old_params, new_params)
+
+
+def _params_are_breaking_change(old_params: list[dict], new_params: list[dict]) -> bool:
+    return bool(_param_problems(old_params, new_params))
 
 
 def _describe_param_change(old_params: list[dict], new_params: list[dict]) -> str:
     """Human-readable summary of what changed, for the alert message."""
-    if len(old_params) != len(new_params):
-        return f"parameter count changed from {len(old_params)} to {len(new_params)}"
-
-    changed = []
-    for i, (old_param, new_param) in enumerate(zip(old_params, new_params)):
-        if old_param.get("type") != new_param.get("type"):
-            changed.append(
-                f"param {i} ('{old_param['name']}'): {old_param.get('type')} -> {new_param.get('type')}"
-            )
-    return "; ".join(changed) if changed else "parameters changed"
+    return "; ".join(_param_problems(old_params, new_params)) or "parameters changed"
 
 
 def check_breaking_changes(
