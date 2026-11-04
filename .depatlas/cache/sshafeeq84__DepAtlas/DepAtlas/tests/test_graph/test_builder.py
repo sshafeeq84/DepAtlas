@@ -1,0 +1,173 @@
+from pathlib import Path
+
+from depatlas.graph.builder import build_graph
+from depatlas.graph.models import DependencyEdge
+
+
+def _edge(source, target):
+    return DependencyEdge(
+        source_service=source,
+        target_service=target,
+        type="import",
+        source_file="fake.py",
+        source_line=1,
+        confidence="high",
+    )
+
+
+def test_self_service_gets_full_node():
+    edges = [_edge("payments-service", "auth-service")]
+    nodes = build_graph(edges, Path("/repos/payments"), self_service="payments-service")
+
+    self_node = next(n for n in nodes if n.id == "payments-service")
+    assert self_node.repo == str(Path("/repos/payments"))
+    assert self_node.language == "python"
+
+
+def test_dependency_only_service_gets_placeholder_node():
+    edges = [_edge("payments-service", "auth-service")]
+    nodes = build_graph(edges, Path("/repos/payments"), self_service="payments-service")
+
+    dep_node = next(n for n in nodes if n.id == "auth-service")
+    assert dep_node.repo == ""
+    assert dep_node.language == ""
+
+
+def test_self_service_with_no_edges_still_gets_a_node():
+    nodes = build_graph([], Path("/repos/leaf-service"), self_service="leaf-service")
+
+    assert len(nodes) == 1
+    assert nodes[0].id == "leaf-service"
+
+
+def test_team_is_none_when_no_codeowners_rules_supplied():
+    nodes = build_graph([], Path("/repos/leaf-service"), self_service="leaf-service")
+    assert nodes[0].team is None
+
+
+def test_team_resolved_via_codeowners_majority(tmp_path):
+    from depatlas.ownership.codeowners import parse_codeowners
+
+    (tmp_path / "a.py").write_text("# fake")
+    (tmp_path / "b.py").write_text("# fake")
+    (tmp_path / "CODEOWNERS").write_text("*.py @payments-team\n")
+    rules = parse_codeowners(tmp_path / "CODEOWNERS")
+
+    nodes = build_graph([], tmp_path, self_service="payments-service", codeowners_rules=rules)
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team == "@payments-team"
+
+
+def test_dependency_placeholder_gets_no_team_from_codeowners_alone(tmp_path):
+    # CODEOWNERS can't resolve a placeholder's team -- there's no file
+    # tree for a service we haven't scanned directly. (The manifest CAN
+    # resolve it -- see test_dependency_placeholder_gets_team_from_manifest.)
+    from depatlas.ownership.codeowners import parse_codeowners
+
+    (tmp_path / "a.py").write_text("# fake")
+    (tmp_path / "CODEOWNERS").write_text("*.py @payments-team\n")
+    rules = parse_codeowners(tmp_path / "CODEOWNERS")
+
+    edges = [_edge("payments-service", "auth-service")]
+    nodes = build_graph(edges, tmp_path, self_service="payments-service", codeowners_rules=rules)
+
+    dep_node = next(n for n in nodes if n.id == "auth-service")
+    assert dep_node.team is None
+
+
+def test_dependency_placeholder_gets_team_from_manifest(tmp_path):
+    # Regression test: the manifest is a flat name->team lookup that
+    # doesn't require having scanned a service's own repo, so it should
+    # resolve a placeholder's team too -- not just the self_service's.
+    manifest_teams = {
+        "payments-service": "payments-team",
+        "auth-service": "platform-team",
+    }
+    edges = [_edge("payments-service", "auth-service")]
+
+    nodes = build_graph(
+        edges, tmp_path, self_service="payments-service", manifest_teams=manifest_teams
+    )
+
+    dep_node = next(n for n in nodes if n.id == "auth-service")
+    assert dep_node.team == "platform-team"
+
+
+def test_codeowners_resolves_non_python_files_too(tmp_path):
+    # Regression test: _resolve_team used to hardcode rglob("*.py"), so
+    # CODEOWNERS resolution silently did nothing for Java/JS repos. A
+    # repo with only a .java file must still resolve a team.
+    from depatlas.ownership.codeowners import parse_codeowners
+
+    (tmp_path / "PaymentsApplication.java").write_text("// fake")
+    (tmp_path / "CODEOWNERS").write_text("*.java @payments-team\n")
+    rules = parse_codeowners(tmp_path / "CODEOWNERS")
+
+    nodes = build_graph([], tmp_path, self_service="payments-service", codeowners_rules=rules)
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team == "@payments-team"
+
+
+def test_manifest_used_when_no_codeowners_given(tmp_path):
+    manifest_teams = {"payments-service": "payments-team-from-manifest"}
+
+    nodes = build_graph(
+        [], tmp_path, self_service="payments-service", manifest_teams=manifest_teams
+    )
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team == "payments-team-from-manifest"
+
+
+def test_manifest_used_when_codeowners_resolves_nothing(tmp_path):
+    from depatlas.ownership.codeowners import parse_codeowners
+
+    (tmp_path / "a.py").write_text("# fake")
+    # A CODEOWNERS file that matches nothing in this repo.
+    (tmp_path / "CODEOWNERS").write_text("*.rb @some-other-team\n")
+    rules = parse_codeowners(tmp_path / "CODEOWNERS")
+    manifest_teams = {"payments-service": "payments-team-from-manifest"}
+
+    nodes = build_graph(
+        [],
+        tmp_path,
+        self_service="payments-service",
+        codeowners_rules=rules,
+        manifest_teams=manifest_teams,
+    )
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team == "payments-team-from-manifest"
+
+
+def test_codeowners_takes_priority_over_manifest_when_both_resolve(tmp_path):
+    from depatlas.ownership.codeowners import parse_codeowners
+
+    (tmp_path / "a.py").write_text("# fake")
+    (tmp_path / "CODEOWNERS").write_text("*.py @payments-team-from-codeowners\n")
+    rules = parse_codeowners(tmp_path / "CODEOWNERS")
+    manifest_teams = {"payments-service": "payments-team-from-manifest"}
+
+    nodes = build_graph(
+        [],
+        tmp_path,
+        self_service="payments-service",
+        codeowners_rules=rules,
+        manifest_teams=manifest_teams,
+    )
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team == "@payments-team-from-codeowners"
+
+
+def test_unowned_when_neither_codeowners_nor_manifest_resolve(tmp_path):
+    manifest_teams = {"some-other-service": "some-team"}
+
+    nodes = build_graph(
+        [], tmp_path, self_service="payments-service", manifest_teams=manifest_teams
+    )
+    self_node = next(n for n in nodes if n.id == "payments-service")
+
+    assert self_node.team is None

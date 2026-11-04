@@ -1,0 +1,8 @@
+{
+  "__self__": "payments-service",
+  "com.org.auth": "auth-service",
+  "com.org.shipping": "shipping-service",
+  "endpoints": {
+    "auth.internal": "auth-service"
+  }
+}

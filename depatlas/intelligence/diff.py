@@ -33,6 +33,19 @@ def _edge_identity(edge: dict, by_location: bool = True) -> tuple:
     )
 
 
+def _index(edges: list[dict], by_location: bool) -> dict:
+    """Edges keyed by identity. When several edges share an identity (the
+    same dependency found in a production file and in a test file), keep a
+    non-test one, so the dependency is not discounted as test-only.
+    """
+    indexed: dict = {}
+    for edge in edges:
+        key = _edge_identity(edge, by_location)
+        if key not in indexed or (indexed[key].get("from_test") and not edge.get("from_test")):
+            indexed[key] = edge
+    return indexed
+
+
 def compute_diff(old_edges: list[dict], new_edges: list[dict], by_location: bool = True) -> dict:
     """Compare two edge lists (as produced by GraphStore.get_snapshot) and
     return {"added": [...], "removed": [...]}, each a list of edge dicts.
@@ -43,8 +56,8 @@ def compute_diff(old_edges: list[dict], new_edges: list[dict], by_location: bool
     and type, so moved or reformatted code does not look like a new
     dependency.
     """
-    old_by_identity = {_edge_identity(e, by_location): e for e in old_edges}
-    new_by_identity = {_edge_identity(e, by_location): e for e in new_edges}
+    old_by_identity = _index(old_edges, by_location)
+    new_by_identity = _index(new_edges, by_location)
 
     added = [e for key, e in new_by_identity.items() if key not in old_by_identity]
     removed = [e for key, e in old_by_identity.items() if key not in new_by_identity]

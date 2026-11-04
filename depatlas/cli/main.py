@@ -35,6 +35,7 @@ from depatlas.ownership.codeowners import parse_codeowners
 from depatlas.ownership.manifest import parse_ownership_manifest
 from depatlas.gitinfo import get_sha
 from depatlas.intelligence.diff import compute_diff
+from depatlas.check import CheckError, run_check
 from depatlas.fsutil import detect_languages, is_test_path
 from depatlas.intelligence.alerts import (
     check_breaking_changes,
@@ -699,6 +700,121 @@ def alerts(
         click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
 
     _exit_if_failing(all_triggered, fail_on)
+
+
+@cli.command()
+@click.option(
+    "--repo",
+    "repo_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("."),
+    show_default=True,
+    help="The service's folder inside a git checkout (a monorepo subfolder is fine).",
+)
+@click.option(
+    "--base",
+    "base",
+    required=True,
+    help="The ref to compare against, e.g. origin/main. The merge-base with HEAD is used.",
+)
+@click.option(
+    "--services",
+    "services_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="The same --services manifest `scan` takes.",
+)
+@click.option(
+    "--graph",
+    "graph_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "An org-wide graph from `depatlas export --format json` (e.g. produced "
+        "by a nightly job). Supplies the teams and the dependents; without it "
+        "no alert can fire."
+    ),
+)
+@click.option(
+    "--language",
+    "language",
+    type=click.Choice(sorted(PARSERS.keys()) + ["all"]),
+    multiple=True,
+    default=(),
+    help="Language parser(s), as for `scan`. Default: detect from file extensions.",
+)
+@click.option(
+    "--codeowners",
+    "codeowners_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="CODEOWNERS file, to resolve this service's own team.",
+)
+@click.option(
+    "--ownership-manifest",
+    "ownership_manifest_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="depatlas.yaml ownership manifest, to resolve this service's own team.",
+)
+@_FAIL_ON_OPTION
+def check(
+    repo_path: Path,
+    base: str,
+    services_path: Path,
+    graph_path: Path | None,
+    language: tuple[str, ...],
+    codeowners_path: Path | None,
+    ownership_manifest_path: Path | None,
+    fail_on: str | None,
+) -> None:
+    """Check a change against its base branch, with no database.
+
+    Scans the merge-base of --base and HEAD, scans the working tree, and
+    reports NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE for what changed.
+    Designed for a pull-request job on a fresh CI runner (which has no
+    stored history): pass the org graph with --graph. Exit status 3 when an
+    alert reaches --fail-on, 1 when the check itself could not run.
+    """
+    manifest = json.loads(services_path.read_text(encoding="utf-8"))
+    known_endpoints = manifest.pop("endpoints", {})
+    languages = (
+        sorted(PARSERS) if "all" in language else list(dict.fromkeys(language))
+    )
+    try:
+        result = run_check(
+            repo_path.resolve(),
+            base,
+            manifest,
+            known_endpoints,
+            languages,
+            PARSERS,
+            SIGNATURE_EXTRACTORS,
+            graph_path=graph_path,
+            codeowners_rules=parse_codeowners(codeowners_path) if codeowners_path else None,
+            manifest_teams=(
+                parse_ownership_manifest(ownership_manifest_path)
+                if ownership_manifest_path
+                else None
+            ),
+        )
+    except CheckError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(
+        f"Compared the working tree with the merge-base of '{base}' "
+        f"({result['base_sha'][:8]}); languages: {', '.join(result['languages'])}",
+        err=True,
+    )
+    for note in result["notes"]:
+        click.echo(f"note: {note}", err=True)
+
+    if not result["alerts"]:
+        click.echo("No alerts.")
+    for alert in result["alerts"]:
+        click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
+
+    _exit_if_failing(result["alerts"], fail_on)
 
 
 @cli.command()
