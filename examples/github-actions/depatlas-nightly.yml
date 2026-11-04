@@ -5,7 +5,10 @@
 # Setup:
 #   1. Create a fine-grained token with read-only "Contents" access to the
 #      repos listed in depatlas-org.yml; save it as the secret DEPATLAS_READ_TOKEN.
-#   2. Run this workflow once by hand (Actions -> Run workflow) so the graph
+#   2. Keep this repository PRIVATE. The graph lists your service names, teams,
+#      private repo names and dependencies, and the release asset is as public
+#      as the repository (the job refuses to run from a public one).
+#   3. Run this workflow once by hand (Actions -> Run workflow) so the graph
 #      exists before the first pull request.
 name: DepAtlas org graph
 
@@ -21,11 +24,18 @@ jobs:
   build-graph:
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse to publish from a public repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh repo view "$GITHUB_REPOSITORY" --json isPrivate --jq .isPrivate)" != "true" ]; then
+            echo "Refusing to publish the org graph from a public repository"; exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install depatlas
+      - run: pip install depatlas==0.4.2
       - name: Scan every repo in depatlas-org.yml
         env:
           DEPATLAS_GITHUB_TOKEN: ${{ secrets.DEPATLAS_READ_TOKEN }}

@@ -745,6 +745,12 @@ def alerts(
     default=None,
     help="depatlas.yaml ownership manifest, to resolve this service's own team.",
 )
+@click.option(
+    "--working-tree",
+    "use_working_tree",
+    is_flag=True,
+    help="Compare the files on disk (uncommitted edits included) instead of HEAD.",
+)
 @_FAIL_ON_OPTION
 def check(
     repo_path: Path,
@@ -756,6 +762,7 @@ def check(
     language: tuple[str, ...],
     codeowners_path: Path | None,
     ownership_manifest_path: Path | None,
+    use_working_tree: bool,
     fail_on: str | None,
 ) -> None:
     """Check a change against its base branch, with no database.
@@ -766,6 +773,11 @@ def check(
     stored history): pass the org graph with --graph. Exit status 3 when an
     alert reaches --fail-on, 1 when the check itself could not run.
     """
+    if fail_on is not None and graph_path is None:
+        raise click.UsageError(
+            "--fail-on needs --graph: without the org graph no alert can fire, so the "
+            "check would always pass. Pass the graph file from `scan-all --export`."
+        )
     if registry_path is None and graph_path is not None:
         try:  # a graph export from `scan-all` carries the registry too
             load_registry(graph_path)
@@ -798,12 +810,13 @@ def check(
                 if ownership_manifest_path
                 else None
             ),
+            use_working_tree=use_working_tree,
         )
     except CheckError as exc:
         raise click.ClickException(str(exc))
 
     click.echo(
-        f"Compared the working tree with the merge-base of '{base}' "
+        f"Compared {'the working tree' if use_working_tree else 'HEAD'} with the merge-base of '{base}' "
         f"({result['base_sha'][:8]}); languages: {', '.join(result['languages'])}",
         err=True,
     )

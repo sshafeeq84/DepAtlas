@@ -47,22 +47,22 @@ def parse_codeowners(path: Path) -> list[OwnershipRule]:
     return rules
 
 
-def _normalize(pattern: str) -> str:
-    """Turn a CODEOWNERS pattern into an fnmatch-compatible glob.
+def _globs(pattern: str) -> list[str]:
+    """The fnmatch globs that together express one CODEOWNERS pattern.
 
-    Handles the common cases: a bare filename extension pattern like
-    `*.py` (matches anywhere), and a directory-anchored pattern like
-    `/tests/` (matches only under that path from the repo root).
-    Full gitignore semantics (negation, `**`, etc.) are out of scope for
-    v1 — this covers what most real CODEOWNERS files actually use.
+    gitignore-style rules: a pattern with a "/" at the start or in the
+    middle is anchored to the repo root, any other matches at any depth; a
+    trailing "/" means everything inside that folder; a bare name matches a
+    file of that name or a folder of that name (and what is inside it).
+    Negation and "**" are out of scope. fnmatch's "*" also crosses "/",
+    which is more generous than gitignore for patterns like `docs/*`.
     """
-    if pattern.startswith("/"):
-        pattern = pattern.lstrip("/")
-        if pattern.endswith("/"):
-            pattern = pattern + "*"
-        return pattern
-    # Unanchored pattern -- may match at any depth.
-    return f"*{pattern}" if not pattern.startswith("*") else pattern
+    anchored = pattern.startswith("/") or "/" in pattern.rstrip("/")
+    body = pattern.lstrip("/")
+    if body.endswith("/"):
+        body += "*"
+    globs = [body] if "*" in body else [body, body + "/*"]
+    return globs if anchored else globs + ["*/" + g for g in globs]
 
 
 def resolve_owner(file_path: str, repo_root: Path, rules: list[OwnershipRule]) -> str | None:
@@ -81,8 +81,7 @@ def resolve_owner(file_path: str, repo_root: Path, rules: list[OwnershipRule]) -
 
     owner: str | None = None
     for rule in rules:
-        glob = _normalize(rule.pattern)
-        if fnmatch.fnmatch(rel_str, glob) or fnmatch.fnmatch("/" + rel_str, "/" + glob):
+        if any(fnmatch.fnmatchcase(rel_str, glob) for glob in _globs(rule.pattern)):
             owner = rule.owner  # last match wins -- keep overwriting
 
     return owner

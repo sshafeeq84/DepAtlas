@@ -2,9 +2,16 @@
 # change with its base branch and fails the job on a breaking change to a
 # function other services depend on (exit status 3).
 #
-# Setup: save the same read-only token as the secret DEPATLAS_READ_TOKEN
-# (it also needs read access to the repo that holds the org-graph release),
-# and replace YOUR-ORG/depatlas-config below.
+# Setup: create a SEPARATE fine-grained token with read-only "Contents" access
+# to the config repo only (the one that holds the org-graph release), save it
+# as the secret DEPATLAS_GRAPH_TOKEN, and replace YOUR-ORG/depatlas-config below.
+# Do not reuse the nightly job's token: anyone who can push a branch to this
+# repo can edit this workflow and print the secret, and the nightly token can
+# read every repo in your org.
+#
+# Pull requests from forks are skipped (they get no secrets). If you make this
+# check "required", GitHub treats a skipped check as passing, so fork PRs are
+# not gated.
 name: DepAtlas check
 
 on: pull_request
@@ -21,10 +28,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install depatlas
+      - run: pip install depatlas==0.4.2
       - name: Download the org graph
         env:
-          GH_TOKEN: ${{ secrets.DEPATLAS_READ_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEPATLAS_GRAPH_TOKEN }}
         run: gh release download org-graph --repo YOUR-ORG/depatlas-config --pattern org-graph.json
       # In a monorepo add: --repo services/payments
       - name: Check the change
