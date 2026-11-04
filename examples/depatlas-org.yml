@@ -1,0 +1,17 @@
+# Which repos make up your system. `depatlas scan-all --config depatlas-org.yml`
+# reads this; names and the links between repos are inferred from the code.
+#
+# List repos by hand, or generate the list:
+#   gh repo list YOUR-ORG --limit 200 --json nameWithOwner --jq '.[] | "  - github: " + .nameWithOwner'
+repos:
+  - github: YOUR-ORG/payments
+  - github: YOUR-ORG/orders
+    team: "@YOUR-ORG/orders-team"   # only needed if the repo has no CODEOWNERS
+  - github: YOUR-ORG/billing
+    ref: main                       # default: the repo's default branch
+    name: billing-service           # default: inferred (spring.application.name, pyproject, package.json...)
+  # Several services in one repo: a glob after a checkout (one service per folder)
+  # - path: ./checkouts/monorepo/services/*
+
+# Optional: a depatlas.yaml mapping service names to teams
+# ownership_manifest: teams.yaml

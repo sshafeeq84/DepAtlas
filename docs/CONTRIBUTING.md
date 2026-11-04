@@ -23,12 +23,17 @@ please open an issue rather than assuming it's your environment.
 depatlas/
 ├── depatlas/
 │   ├── cli/            # CLI entry points (click)
+│   ├── check.py          # `check`: stateless pull-request comparison
+│   ├── discovery.py       # infer service names / import names; the registry
+│   ├── orgscan.py          # `scan-all`: many repos into one graph
+│   ├── workflow.py          # the scan pipeline shared by scan and scan-all
 │   ├── connectors/      # GitHub, CodeCommit -- get code onto local disk
 │   ├── parsers/          # Language parsers (Python/ast, Java/tree-sitter, JS-TS/tree-sitter)
 │   ├── graph/            # Data model, graph builder, SQLite store
 │   ├── ownership/        # CODEOWNERS + depatlas.yaml manifest resolution
 │   ├── intelligence/      # Diff engine, alerts
 │   └── output/            # JSON / DOT exporters
+├── examples/                # org config + GitHub Actions workflows
 ├── tests/                  # Mirrors the structure above, 1:1
 └── docs/
     └── SPEC.pdf             # Original v0.1 spec this project follows

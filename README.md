@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 232 passing tests. Some gaps are known and listed
+export — all covered by 269 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -46,6 +46,26 @@ in [Known limitations](#known-limitations).
 | **Export** | JSON and Graphviz DOT |
 
 ## Quick start
+
+No setup file is needed. DepAtlas names a service from its own code
+(`spring.application.name`, `pom.xml`, `pyproject.toml`, `package.json`, or
+the folder) and works out how other code refers to it (Python packages, the
+npm name, the Java package):
+
+```bash
+pip install depatlas
+
+# What services are in this folder, and what are they called?
+depatlas discover --root ~/code --output registry.json
+
+# Scan one of them. The registry says who the others are, so links between
+# services are found with nothing hand-written:
+depatlas scan --repo ~/code/payments --registry registry.json
+depatlas query --service payments-service
+```
+
+Everything below also works with an explicit `--services` file when you
+want full control.
 
 ```bash
 pip install -e ".[dev]"
@@ -83,9 +103,10 @@ depatlas scan --repo . --services services.json --language all
 depatlas scan --repo . --services services.json --fail-on high
 ```
 
-The `--services` file is a small JSON manifest mapping importable module
-names to service names, plus a special `__self__` key naming the service
-being scanned:
+The `--services` file is optional. When you want to write one, it is a
+small JSON manifest mapping importable module names to service names,
+plus a special `__self__` key naming the service being scanned (anything
+it says overrides what was inferred):
 
 ```json
 {
@@ -110,6 +131,8 @@ manifests — are in [Full usage](#full-usage) below.
 | `depatlas diff` | Compare two snapshots (`--from`/`--to` or `--last 2`) |
 | `depatlas alerts` | Check the stored graph for all 5 alert types |
 | `depatlas check` | Stateless pull-request check: compare HEAD with its merge-base, no database needed |
+| `depatlas discover` | Find the services under a folder and show how they are named (no manifest needed) |
+| `depatlas scan-all` | Scan many repos listed in a config file into one graph — the nightly org-graph job |
 | `depatlas export` | Export the whole graph as JSON or DOT |
 
 Every command supports `--help` for full option details.
@@ -206,42 +229,68 @@ Tests: `tests/test_intelligence/test_alerts.py`.
 ### Using it in CI
 
 A fresh CI runner has no stored history and has only your repo, so `scan`
-+ `alerts` cannot see what changed or who depends on you. `depatlas check`
-does the before/after comparison in one run, with no database:
++ `alerts` cannot see what changed or who depends on you. Two commands fix
+that, with nothing hand-written:
+
+**1. A nightly job builds the org-wide graph.** List your repos once:
+
+```yaml
+# depatlas-org.yml
+repos:
+  - github: acme/payments
+  - github: acme/orders
+    team: "@acme/orders-team"   # only if the repo has no CODEOWNERS
+```
 
 ```bash
-depatlas check --base origin/main --services services.json \
-  --graph org-graph.json --fail-on high
+depatlas scan-all --config depatlas-org.yml --db graph.db --reset --export org-graph.json
+```
+
+It fetches every repo, infers each service's name and import names, scans
+each one against all the others, and writes the graph plus the service
+registry to `org-graph.json`. One broken repo does not stop the rest, but
+if any fails it exits 1 and writes no export, so a half-built graph is
+never published (`--allow-partial` overrides). A glob such as
+`path: ./checkouts/monorepo/services/*` treats each folder as a service.
+
+**2. Every pull request checks its change against that graph:**
+
+```bash
+depatlas check --base origin/main --graph org-graph.json --fail-on high
 ```
 
 It finds the merge-base of `--base` and HEAD, scans that commit and your
 working tree, and reports `BREAKING_CHANGE` and
-`NEW_CROSS_TEAM_DEPENDENCY` for what changed. `org-graph.json` is the
-output of `depatlas export --format json`, produced by a scheduled job
-that scans every repo; it supplies the teams and the services that depend
-on you (which one repo cannot know). Without `--graph` the check still
-runs but says that no alert can fire. Exit status: `0` clean, `3` an alert
-reached `--fail-on`, `1` the check could not run. `--repo` can point at a
-subfolder of a monorepo.
+`NEW_CROSS_TEAM_DEPENDENCY` for what changed. The graph supplies the teams
+and the services that depend on you, which one repo cannot know. Without
+`--graph` the check still runs but says that no alert can fire. Exit
+status: `0` clean, `3` an alert reached `--fail-on`, `1` the check could
+not run. `--repo` can point at a subfolder of a monorepo.
 
-```yaml
-# .github/workflows/depatlas.yml
-on: pull_request
-jobs:
-  depatlas:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }   # check needs history to find the merge-base
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install depatlas
-      - run: depatlas check --base origin/${{ github.base_ref }} --services services.json --graph org-graph.json --fail-on high
-```
+Ready-to-copy GitHub Actions workflows for both jobs are in
+[`examples/github-actions/`](https://github.com/sshafeeq84/DepAtlas/tree/main/examples/github-actions):
+`depatlas-nightly.yml` rebuilds the graph and publishes it as a release
+asset, and `depatlas-pr-check.yml` downloads it and runs `check`. Run the
+nightly workflow once by hand before the first pull request.
 
 The point-in-time alerts (`HIGH_FAN_IN`, `ORPHANED_SERVICE`,
 `UNOWNED_SERVICE`) describe the whole graph rather than a change, so they
-stay in `depatlas alerts`.
+stay in `depatlas alerts` (for example `depatlas alerts --db graph.db` after
+`scan-all`).
+
+### How services are named and linked
+
+| Language | Name, first match wins | Other code imports it as |
+|---|---|---|
+| Java / Spring | `spring.application.name`, Maven `artifactId`, Gradle `rootProject.name` | the package prefix shared by all its sources (at least 3 segments) |
+| Python | `[project]` / `[tool.poetry]` name, `setup.cfg`, `setup.py` | its top-level packages |
+| JavaScript / TypeScript | `package.json` `name` (scope dropped for the service name) | the full npm name |
+
+The folder name is the last resort. URLs like `http://payments-service:8080/`
+or `lb://payments-service` resolve to a service of that name. Generic or
+standard-library import names (`utils`, `config`, `json`...) are never
+registered, and an import name claimed by two services is dropped with a
+warning. Use `--name`, or write a `--services` file, to override anything.
 
 ## Full usage
 
@@ -317,13 +366,15 @@ Known gaps, documented in the relevant modules and in
 - **Dependents of a breaking change** — every dependent is counted, not
   only those that import the changed code (HTTP callers depend on routes,
   which are not extracted yet).
-- **Service manifest** — `--services` must be written by hand; inferring
-  module-to-service mappings is not built.
-- **CI graph** — `depatlas check` needs the org-wide graph file from
-  somewhere: a scheduled job that scans every repo and runs
-  `depatlas export`. DepAtlas does not run that job for you, and the file
-  is only as fresh as its last run. `scan --fail-on` still needs a
-  database that persists between runs.
+- **Inference limits** — names and import names are read from build files
+  and source layout, so an unusual layout can be missed. Java packages
+  shorter than three segments are not registered, and a shared package
+  name used by two services identifies neither. `depatlas discover` shows
+  what was found; override with `--name` or a `--services` file.
+- **CI graph freshness** — `depatlas check` reads the org graph written by
+  the nightly job, so it is only as fresh as the last run. `scan --fail-on`
+  still needs a database that persists between runs. `scan-all` takes an
+  explicit repo list; it does not list an organisation's repos for you.
 - **HTTP calls that name no service** — only the hostname of an absolute
   URL is matched against service names. Calls routed through a gateway
   (`https://api.company.com/payments/...`) or made through a base-URL
@@ -349,6 +400,10 @@ pytest tests/ -v
 depatlas/
 ├── depatlas/
 │   ├── cli/            # CLI entry point (click)
+│   ├── check.py          # `check`: the stateless pull-request comparison
+│   ├── discovery.py       # infer service names, import names, registry
+│   ├── orgscan.py          # `scan-all`: many repos into one graph
+│   ├── workflow.py          # the scan pipeline shared by scan and scan-all
 │   ├── connectors/       # GitHub, AWS CodeCommit
 │   ├── parsers/          # python_parser (ast), java_parser (tree-sitter),
 │   │                       js_ts_parser (tree-sitter)
@@ -356,6 +411,7 @@ depatlas/
 │   ├── ownership/          # CODEOWNERS + depatlas.yaml manifest
 │   ├── intelligence/        # Diff engine, alerts
 │   └── output/                # JSON and DOT exporters
+├── examples/                      # org config + GitHub Actions workflows
 ├── tests/                       # Mirrors the structure above, 1:1
 ├── docs/
 │   ├── SPEC.pdf                  # Original v0.1 spec
