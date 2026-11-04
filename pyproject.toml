@@ -1,6 +1,6 @@
 [project]
 name = "depatlas"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reads your codebase and builds a living dependency graph across services, teams, and repositories."
 readme = "README.md"
 requires-python = ">=3.10"

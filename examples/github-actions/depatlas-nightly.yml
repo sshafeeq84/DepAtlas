@@ -1,0 +1,38 @@
+# Put this in ONE repo (for example YOUR-ORG/depatlas-config) next to
+# depatlas-org.yml. It rebuilds the org-wide graph every night and publishes
+# it as a release asset that pull-request checks in every service repo read.
+#
+# Setup:
+#   1. Create a fine-grained token with read-only "Contents" access to the
+#      repos listed in depatlas-org.yml; save it as the secret DEPATLAS_READ_TOKEN.
+#   2. Run this workflow once by hand (Actions -> Run workflow) so the graph
+#      exists before the first pull request.
+name: DepAtlas org graph
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to update the 'org-graph' release
+
+jobs:
+  build-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install depatlas
+      - name: Scan every repo in depatlas-org.yml
+        env:
+          DEPATLAS_GITHUB_TOKEN: ${{ secrets.DEPATLAS_READ_TOKEN }}
+        run: depatlas scan-all --config depatlas-org.yml --db graph.db --reset --export org-graph.json
+      - name: Publish the graph as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view org-graph >/dev/null 2>&1 || gh release create org-graph --title "Org graph" --notes "Rebuilt nightly by DepAtlas. Do not edit."
+          gh release upload org-graph org-graph.json --clobber

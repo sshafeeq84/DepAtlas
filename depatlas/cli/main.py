@@ -36,6 +36,15 @@ from depatlas.ownership.manifest import parse_ownership_manifest
 from depatlas.gitinfo import get_sha
 from depatlas.intelligence.diff import compute_diff
 from depatlas.check import CheckError, run_check
+from depatlas.discovery import (
+    discover_workspace,
+    find_codeowners,
+    load_registry,
+    registry_to_dict,
+    resolve_manifest,
+)
+from depatlas.orgscan import scan_all
+from depatlas.workflow import resolve_languages, run_scan
 from depatlas.fsutil import detect_languages, is_test_path
 from depatlas.intelligence.alerts import (
     check_breaking_changes,
@@ -93,6 +102,38 @@ def _exit_if_failing(alert_list: list, fail_on: str | None) -> None:
     threshold = _SEVERITY_RANK[fail_on]
     if any(_SEVERITY_RANK.get(a.severity, 0) >= threshold for a in alert_list):
         raise click.exceptions.Exit(ALERT_EXIT_CODE)
+
+
+_REGISTRY_OPTION = click.option(
+    "--registry",
+    "registry_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "The other services in your system: the output of `depatlas discover`, "
+        "or a graph export from `depatlas scan-all` (which carries one)."
+    ),
+)
+_NAME_OPTION = click.option(
+    "--name",
+    "service_name_override",
+    default=None,
+    help="Name of the service being scanned (default: inferred from the code).",
+)
+
+
+def _log(message: str) -> None:
+    click.echo(message, err=True)
+
+
+def _ownership_for(repo_path: Path, codeowners_path: Path | None):
+    """The CODEOWNERS file to use: the one given, else one in a standard place."""
+    if codeowners_path is not None:
+        return codeowners_path
+    found = find_codeowners(repo_path)
+    if found is not None:
+        _log(f"Using {found.relative_to(repo_path).as_posix()} for ownership")
+    return found
 
 
 _FAIL_ON_OPTION = click.option(
@@ -163,18 +204,20 @@ def cli() -> None:
 @click.option(
     "--services",
     "services_path",
-    required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
     help=(
-        "Path to a JSON file mapping importable module names to service "
+        "Optional. A JSON file mapping importable module names to service "
         "names, e.g. {\"__self__\": \"payments-service\", \"auth_client\": \"auth-service\"}. "
         "__self__ names the service being scanned. An optional reserved "
-        "\"endpoints\" key maps URL host/path patterns to service names for "
-        "resolving requests.get/post/etc. call sites, e.g. "
-        "{\"endpoints\": {\"auth.internal\": \"auth-service\"}}. This replaces "
-        "the full depatlas.yaml manifest for now."
+        "\"endpoints\" key maps URL host/path patterns to service names, e.g. "
+        "{\"endpoints\": {\"auth.internal\": \"auth-service\"}}. Without it "
+        "the service is named from the code (see `depatlas discover`) and "
+        "--registry supplies the other services."
     ),
 )
+@_REGISTRY_OPTION
+@_NAME_OPTION
 @click.option(
     "--language",
     "language",
@@ -252,7 +295,9 @@ def scan(
     region: str,
     ref: str,
     cache_dir: Path,
-    services_path: Path,
+    services_path: Path | None,
+    registry_path: Path | None,
+    service_name_override: str | None,
     language: tuple[str, ...],
     codeowners_path: Path | None,
     ownership_manifest_path: Path | None,
@@ -305,98 +350,38 @@ def scan(
     if repo_key is None:
         repo_key = str(repo_path)
 
-    manifest = json.loads(services_path.read_text(encoding="utf-8"))
-    known_endpoints = manifest.pop("endpoints", {})
-    known_services = manifest
+    try:
+        known_services, known_endpoints = resolve_manifest(
+            repo_path, services_path, registry_path, service_name_override, _log
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
     self_service = known_services.get("__self__", "unknown-service")
 
-    codeowners_rules = parse_codeowners(codeowners_path) if codeowners_path else None
+    codeowners_path = _ownership_for(repo_path, codeowners_path)
     manifest_teams = (
         parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
     )
+    languages = resolve_languages(repo_path, language, PARSERS, _log)
 
-    if not language:
-        languages = detect_languages(repo_path) or ["python"]
-        click.echo(f"Detected language(s): {', '.join(languages)}", err=True)
-    elif "all" in language:
-        languages = sorted(PARSERS)
-    else:
-        languages = list(dict.fromkeys(language))
-    edges = []
-    for lang in languages:
-        edges.extend(PARSERS[lang](repo_path, known_services, known_endpoints))
-    commit_sha = get_sha(repo_path)
-    for edge in edges:
-        edge.detected_at_sha = commit_sha
-        edge.from_test = is_test_path(Path(edge.source_file))
-    nodes = build_graph(
-        edges,
+    result = run_scan(
         repo_path,
-        self_service,
-        language=",".join(languages),
-        codeowners_rules=codeowners_rules,
+        repo_key,
+        known_services,
+        known_endpoints,
+        languages,
+        PARSERS,
+        SIGNATURE_EXTRACTORS,
+        db_path,
+        codeowners_path=codeowners_path,
         manifest_teams=manifest_teams,
-        repo_id=repo_key,
+        ownership_inputs_supplied=bool(codeowners_path or ownership_manifest_path),
+        alerts_enabled=alerts_enabled,
+        fan_in_threshold=fan_in_threshold,
+        log=_log,
     )
-
-    for node in nodes:
-        if node.id == self_service:
-            node.last_analysed_sha = commit_sha
-
-    signatures = []
-    for lang in languages:
-        signatures.extend(SIGNATURE_EXTRACTORS[lang](repo_path, self_service))
-
-    store = GraphStore(db_path)
-    with store.transaction():  # services, edges and snapshot commit together
-        store.upsert_services(
-            nodes,
-            ownership_inputs_supplied=bool(codeowners_path or ownership_manifest_path),
-        )
-        store.replace_edges_for_repo(repo_key, edges, self_service=self_service)
-        snapshot_id = store.save_snapshot(
-            repo_key, edges, signatures=signatures, languages=languages
-        )
-
-    triggered_alerts = []
-    if alerts_enabled:
-        service_teams = {s["id"]: s["team"] for s in store.all_services()}
-
-        # NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE both need a diff
-        # -- only possible once this repo has at least two snapshots to
-        # compare.
-        recent = store.list_snapshots(repo=repo_key, limit=2)
-        if len(recent) == 2:
-            old_snapshot = store.get_snapshot(recent[1]["id"])
-            new_snapshot = store.get_snapshot(recent[0]["id"])
-            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"], by_location=False)
-            triggered_alerts += check_new_cross_team_dependencies(
-                diff_result["added"], service_teams
-            )
-
-            upstream_for_breaking_check = store.edges_for_service(
-                self_service, direction="upstream"
-            )
-            old_sigs, new_sigs, skipped = comparable_signatures(old_snapshot, new_snapshot)
-            if skipped:
-                click.echo(
-                    f"warning: language set changed since the previous scan; "
-                    f"not comparing signatures for: {', '.join(skipped)}",
-                    err=True,
-                )
-            triggered_alerts += check_breaking_changes(
-                self_service, old_sigs, new_sigs, upstream_for_breaking_check
-            )
-
-        # The other three are point-in-time checks against the service
-        # just scanned.
-        downstream = store.edges_for_service(self_service, direction="downstream")
-        upstream = store.edges_for_service(self_service, direction="upstream")
-        triggered_alerts += check_orphaned_service(self_service, downstream, upstream)
-        triggered_alerts += check_unowned_service(self_service, service_teams.get(self_service))
-        triggered_alerts += check_high_fan_in(self_service, upstream, threshold=fan_in_threshold)
-
-    store.close()
+    edges, nodes = result.edges, result.nodes
+    snapshot_id, triggered_alerts = result.snapshot_id, result.alerts
 
     text = export_edges(edges, output_path)
     click.echo(text)
@@ -720,19 +705,22 @@ def alerts(
 @click.option(
     "--services",
     "services_path",
-    required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="The same --services manifest `scan` takes.",
+    default=None,
+    help="Optional: the same --services manifest `scan` takes. Without it the service is named from the code.",
 )
+@_REGISTRY_OPTION
+@_NAME_OPTION
 @click.option(
     "--graph",
     "graph_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
     help=(
-        "An org-wide graph from `depatlas export --format json` (e.g. produced "
-        "by a nightly job). Supplies the teams and the dependents; without it "
-        "no alert can fire."
+        "An org-wide graph (from `depatlas scan-all --export`, or `depatlas "
+        "export --format json`), e.g. produced by a nightly job. Supplies the "
+        "teams and the dependents, and -- when it carries a registry -- the "
+        "other services' names; without it no alert can fire."
     ),
 )
 @click.option(
@@ -761,7 +749,9 @@ def alerts(
 def check(
     repo_path: Path,
     base: str,
-    services_path: Path,
+    services_path: Path | None,
+    registry_path: Path | None,
+    service_name_override: str | None,
     graph_path: Path | None,
     language: tuple[str, ...],
     codeowners_path: Path | None,
@@ -776,16 +766,27 @@ def check(
     stored history): pass the org graph with --graph. Exit status 3 when an
     alert reaches --fail-on, 1 when the check itself could not run.
     """
-    manifest = json.loads(services_path.read_text(encoding="utf-8"))
-    known_endpoints = manifest.pop("endpoints", {})
+    if registry_path is None and graph_path is not None:
+        try:  # a graph export from `scan-all` carries the registry too
+            load_registry(graph_path)
+            registry_path = graph_path
+        except ValueError:
+            pass
+    try:
+        known_services, known_endpoints = resolve_manifest(
+            repo_path.resolve(), services_path, registry_path, service_name_override, _log
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
     languages = (
         sorted(PARSERS) if "all" in language else list(dict.fromkeys(language))
     )
+    codeowners_path = _ownership_for(repo_path.resolve(), codeowners_path)
     try:
         result = run_check(
             repo_path.resolve(),
             base,
-            manifest,
+            known_services,
             known_endpoints,
             languages,
             PARSERS,
@@ -815,6 +816,130 @@ def check(
         click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
 
     _exit_if_failing(result["alerts"], fail_on)
+
+
+@cli.command()
+@click.option(
+    "--root",
+    "root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("."),
+    show_default=True,
+    help="Folder to search for services (a monorepo, or a folder of checkouts).",
+)
+@click.option("--depth", type=int, default=3, show_default=True, help="How many folders deep to look.")
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the registry here (for `scan --registry`).",
+)
+def discover(root: Path, depth: int, output_path: Path | None) -> None:
+    """Find the services under a folder and show how they are named.
+
+    No manifest needed: names come from spring.application.name, pom.xml,
+    pyproject.toml or package.json, and the import names (Python packages,
+    npm name, Java package prefix) are what other code uses to depend on
+    each service. Use the output with `scan --registry`.
+    """
+    services = discover_workspace(root, max_depth=depth)
+    if not services:
+        click.echo("No services found.")
+        return
+    for service in services:
+        click.echo(
+            f"{service.name}  [{', '.join(service.languages) or '-'}]  {service.path}\n"
+            f"    from {service.source}; import names: {', '.join(service.import_names) or '(none)'}"
+        )
+    if output_path is not None:
+        output_path.write_text(json.dumps(registry_to_dict(services), indent=2), encoding="utf-8")
+        click.echo(f"\nWrote registry for {len(services)} service(s) to {output_path}", err=True)
+
+
+@cli.command("scan-all")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="YAML file listing the repos to scan (see the README).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+@click.option(
+    "--export",
+    "export_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the whole graph, with the service registry, to this JSON file (for `check --graph`).",
+)
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Where remote repos are downloaded (default: from the config, else .depatlas/cache).",
+)
+@click.option("--reset", is_flag=True, help="Start from an empty database.")
+@click.option(
+    "--allow-partial",
+    is_flag=True,
+    help="Write the export even if some repos failed (default: write nothing and exit 1).",
+)
+def scan_all_command(
+    config_path: Path,
+    db_path: Path,
+    export_path: Path | None,
+    cache_dir: Path | None,
+    reset: bool,
+    allow_partial: bool,
+) -> None:
+    """Scan every repo in a config file into one graph.
+
+    Meant for a scheduled job: it builds the org-wide graph that
+    `depatlas check --graph` reads in pull requests. Names and links
+    between repos are inferred from the code. Exits 1 if any repo failed
+    (and then writes no export unless --allow-partial), so a half-built
+    graph is never published by mistake.
+    """
+    if reset:
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+    try:
+        report = scan_all(config_path, db_path, PARSERS, SIGNATURE_EXTRACTORS, cache_dir, _log)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"\nScanned {len(report.scanned)} repo(s):")
+    for item in report.scanned:
+        click.echo(f"  {item['name']}: {item['edges']} edge(s)")
+    if report.failures:
+        click.echo(f"\n{len(report.failures)} repo(s) failed:", err=True)
+        for label, reason in report.failures:
+            click.echo(f"  {label}: {reason}", err=True)
+
+    if export_path is not None and (allow_partial or not report.failures):
+        store = GraphStore(db_path)
+        payload = {
+            "nodes": store.all_services(),
+            "edges": store.all_edges(),
+            "registry": report.registry,
+        }
+        store.close()
+        export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        click.echo(f"Wrote graph ({len(payload['nodes'])} node(s), {len(payload['edges'])} edge(s)) to {export_path}")
+    elif export_path is not None:
+        click.echo("Not writing the export because some repos failed (use --allow-partial).", err=True)
+
+    if report.failures:
+        raise click.exceptions.Exit(1)
 
 
 @cli.command()
