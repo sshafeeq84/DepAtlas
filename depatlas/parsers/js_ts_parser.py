@@ -259,6 +259,9 @@ def parse_package_json(
                     source_file=str(file_path),
                     source_line=0,  # package.json entries have no meaningful line concept here
                     confidence="high",
+                    # A dev dependency (linter, test runner, build tool) is recorded
+                    # but is not part of the service's runtime surface: no alerts.
+                    from_test=(section == "devDependencies"),
                 )
             )
 

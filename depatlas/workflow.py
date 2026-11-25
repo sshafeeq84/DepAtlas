@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from depatlas.fsutil import detect_languages, is_test_path
+from depatlas.fsutil import detect_languages, excluding, is_test_path, load_excludes
 from depatlas.gitinfo import get_sha
 from depatlas.graph.builder import build_graph
 from depatlas.graph.store import GraphStore
@@ -64,33 +64,36 @@ def run_scan(
     alerts_enabled: bool = False,
     fan_in_threshold: int = 10,
     log: Callable[[str], None] = lambda message: None,
+    exclude: tuple[str, ...] | list[str] = (),
 ) -> ScanResult:
     self_service = known_services.get("__self__", "unknown-service")
     codeowners_rules = parse_codeowners(codeowners_path) if codeowners_path else None
 
-    edges = []
-    for lang in languages:
-        edges.extend(parsers[lang](repo_path, known_services, known_endpoints))
-    commit_sha = get_sha(repo_path)
-    for edge in edges:
-        edge.detected_at_sha = commit_sha
-        edge.from_test = is_test_path(Path(edge.source_file))
-    nodes = build_graph(
-        edges,
-        repo_path,
-        self_service,
-        language=",".join(languages),
-        codeowners_rules=codeowners_rules,
-        manifest_teams=manifest_teams,
-        repo_id=repo_key,
-    )
-    for node in nodes:
-        if node.id == self_service:
-            node.last_analysed_sha = commit_sha
+    # Excluded paths (.depatlasignore plus `exclude`) are not scanned at all.
+    with excluding(repo_path, load_excludes(repo_path, exclude)):
+        edges = []
+        for lang in languages:
+            edges.extend(parsers[lang](repo_path, known_services, known_endpoints))
+        commit_sha = get_sha(repo_path)
+        for edge in edges:
+            edge.detected_at_sha = commit_sha
+            edge.from_test = edge.from_test or is_test_path(Path(edge.source_file))
+        nodes = build_graph(
+            edges,
+            repo_path,
+            self_service,
+            language=",".join(languages),
+            codeowners_rules=codeowners_rules,
+            manifest_teams=manifest_teams,
+            repo_id=repo_key,
+        )
+        for node in nodes:
+            if node.id == self_service:
+                node.last_analysed_sha = commit_sha
 
-    signatures = []
-    for lang in languages:
-        signatures.extend(extractors[lang](repo_path, self_service))
+        signatures = []
+        for lang in languages:
+            signatures.extend(extractors[lang](repo_path, self_service))
 
     store = GraphStore(db_path)
     try:

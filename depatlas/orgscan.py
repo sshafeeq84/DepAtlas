@@ -9,10 +9,12 @@ The config file lists the repos (YAML):
         name: orders-service       # default: inferred from the code
         team: "@acme/orders-team"  # used when CODEOWNERS gives no team
         language: [java]           # default: detected
+        exclude: [legacy/]         # optional; skipped in this repo only
       - path: ./services/*         # local folders; a glob is one service each
       - codecommit: billing
         region: eu-west-1
     ownership_manifest: teams.yaml # optional depatlas.yaml (name -> team)
+    exclude: ["generated/", "*.pb.java"]   # optional; skipped in every repo
     cache_dir: .depatlas/cache     # optional
 
 It runs in two passes, because a repo can only be linked to the others once
@@ -55,6 +57,7 @@ class OrgRepo:
     name: str | None = None
     team: str | None = None
     languages: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass
@@ -62,6 +65,16 @@ class OrgScanReport:
     scanned: list[dict] = field(default_factory=list)  # {"name","repo","edges"}
     failures: list[tuple[str, str]] = field(default_factory=list)  # (label, reason)
     registry: list[dict] = field(default_factory=list)
+
+
+def _exclude_list(value, where: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError(f"{where}: 'exclude' must be a list of path patterns")
+    return tuple(v for v in value if v.strip())
 
 
 def load_org_config(path: Path) -> tuple[list[OrgRepo], dict]:
@@ -89,7 +102,9 @@ def load_org_config(path: Path) -> tuple[list[OrgRepo], dict]:
         language = entry.get("language") or []
         if isinstance(language, str):
             language = [language]
+        repo_exclude = _exclude_list(entry.get("exclude"), where)
         common = dict(
+            exclude=repo_exclude,
             ref=str(entry.get("ref", "HEAD")),
             region=str(entry.get("region", "us-east-1")),
             name=entry.get("name"),
@@ -109,6 +124,7 @@ def load_org_config(path: Path) -> tuple[list[OrgRepo], dict]:
             repos.append(OrgRepo(label=f"{kind}:{target}", kind=kind, target=target, **common))
 
     settings = {
+        "exclude": _exclude_list(data.get("exclude"), str(path)),
         "ownership_manifest": (
             str(base / data["ownership_manifest"]) if data.get("ownership_manifest") else None
         ),
@@ -158,7 +174,7 @@ def scan_all(
         try:
             log(f"Fetching {repo.label}...")
             path, key = _fetch(repo, cache, state)
-            service = describe_service(path, name=repo.name)
+            service = describe_service(path, name=repo.name, exclude=settings["exclude"] + repo.exclude)
             service.path = key
             if service.name in used_names:
                 raise ValueError(
@@ -196,6 +212,7 @@ def scan_all(
                 manifest_teams=teams or None,
                 ownership_inputs_supplied=bool(codeowners or service.name in teams),
                 alerts_enabled=False,
+                exclude=settings["exclude"] + repo.exclude,
             )
             report.scanned.append({"name": service.name, "repo": key, "edges": len(result.edges)})
             log(f"Scanned {service.name}: {len(result.edges)} edge(s)")

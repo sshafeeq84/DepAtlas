@@ -33,7 +33,7 @@ v1 core complete. Three language parsers, three
 code sources, a persisted queryable graph with history and diffing, full
 ownership resolution, all five spec'd alert types (including
 signature-level breaking-change detection), and both JSON and DOT
-export — all covered by 323 passing tests. Some gaps are known and listed
+export — all covered by 376 passing tests. Some gaps are known and listed
 in [Known limitations](#known-limitations).
 
 | Area | What's there |
@@ -287,6 +287,38 @@ The point-in-time alerts (`HIGH_FAN_IN`, `ORPHANED_SERVICE`,
 stay in `depatlas alerts` (for example `depatlas alerts --db graph.db` after
 `scan-all`).
 
+### Excluding paths
+
+Generated code, vendored copies and odd test folders can be left out of a scan
+entirely (no edges, no public signatures, no language detection). Three ways,
+all using the same gitignore-style patterns as CODEOWNERS (a leading `/` anchors
+to the service folder, a trailing `/` means a folder, a bare name matches at any
+depth; `*` is allowed; no `**` or `!` negation):
+
+```
+# .depatlasignore in the service folder (one pattern per line, # for comments)
+generated/
+*.pb.java
+/legacy
+```
+
+```
+depatlas scan --repo . --exclude generated/ --exclude "*.pb.java"
+depatlas check --base origin/main --graph org-graph.json --exclude generated/
+```
+
+```yaml
+# scan-all config: `exclude` at the top applies to every repo, inside an entry to that repo only
+exclude: [generated/]
+repos:
+  - github: acme/orders
+    exclude: [legacy/]
+```
+
+`.depatlasignore` is always read when present. `check` applies the same
+patterns to both the base and HEAD, so excluding a folder never looks like a
+change.
+
 ### How services are named and linked
 
 | Language | Name, first match wins | Other code imports it as |
@@ -384,6 +416,8 @@ Known gaps, documented in the relevant modules and in
 - **Ownership patterns** — CODEOWNERS matching supports files, folders,
   anchored paths and `*` globs; negation and `**` are not supported, and `*`
   also crosses folder boundaries (more generous than GitHub).
+- **DepAtlas's own folder** — `.depatlas/` (cache and databases) is never scanned; add it to `.gitignore` so it is not committed.
+- **Test, fixture and sample code** — files under `tests/`, `fixtures/` and `testdata/`, and under top-level `docs/`, `doc/`, `docs_src/`, `examples/`, `samples/`, `demo/`, `scripts/` and `benchmarks/`, are recorded but never raise alerts and are left out of the public API. `devDependencies` in `package.json` are recorded the same way. A test or tooling folder with an unusual name (`t/`, `extra/`) is not recognised automatically; leave it out with the exclude option (see *Excluding paths*).
 - **Large files** — source files over 2 MB are skipped with a warning
   (minified bundles, generated code).
 - **Dependents of a breaking change** — every dependent is counted, not
