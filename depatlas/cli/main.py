@@ -45,7 +45,7 @@ from depatlas.discovery import (
 )
 from depatlas.orgscan import scan_all
 from depatlas.workflow import resolve_languages, run_scan
-from depatlas.fsutil import detect_languages, is_test_path
+from depatlas.fsutil import detect_languages, excluding, is_test_path, load_excludes
 from depatlas.intelligence.alerts import (
     check_breaking_changes,
     comparable_signatures,
@@ -287,6 +287,13 @@ def cli() -> None:
     show_default=True,
     help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
 )
+@click.option(
+    "--exclude",
+    "exclude",
+    multiple=True,
+    help="Path pattern to leave out of the scan (repeatable), e.g. --exclude generated/. "
+    "A .depatlasignore file in the service folder is read too.",
+)
 @_FAIL_ON_OPTION
 def scan(
     repo_path: Path | None,
@@ -306,6 +313,7 @@ def scan(
     alerts_enabled: bool,
     fan_in_threshold: int,
     fail_on: str | None,
+    exclude: tuple[str, ...],
 ) -> None:
     """Scan a repo (local, GitHub, or CodeCommit), persist the results, and print the edges found."""
     sources_given = [s for s in (repo_path, github_repo, codecommit_repo) if s]
@@ -362,7 +370,8 @@ def scan(
     manifest_teams = (
         parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
     )
-    languages = resolve_languages(repo_path, language, PARSERS, _log)
+    with excluding(repo_path, load_excludes(repo_path, exclude)):
+        languages = resolve_languages(repo_path, language, PARSERS, _log)
 
     result = run_scan(
         repo_path,
@@ -379,6 +388,7 @@ def scan(
         alerts_enabled=alerts_enabled,
         fan_in_threshold=fan_in_threshold,
         log=_log,
+        exclude=exclude,
     )
     edges, nodes = result.edges, result.nodes
     snapshot_id, triggered_alerts = result.snapshot_id, result.alerts
@@ -751,6 +761,13 @@ def alerts(
     is_flag=True,
     help="Compare the files on disk (uncommitted edits included) instead of HEAD.",
 )
+@click.option(
+    "--exclude",
+    "exclude",
+    multiple=True,
+    help="Path pattern to leave out of the scan (repeatable), e.g. --exclude generated/. "
+    "A .depatlasignore file in the service folder is read too.",
+)
 @_FAIL_ON_OPTION
 def check(
     repo_path: Path,
@@ -764,6 +781,7 @@ def check(
     ownership_manifest_path: Path | None,
     use_working_tree: bool,
     fail_on: str | None,
+    exclude: tuple[str, ...],
 ) -> None:
     """Check a change against its base branch, with no database.
 
@@ -811,6 +829,7 @@ def check(
                 else None
             ),
             use_working_tree=use_working_tree,
+            exclude=exclude,
         )
     except CheckError as exc:
         raise click.ClickException(str(exc))

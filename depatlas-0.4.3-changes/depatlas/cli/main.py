@@ -1,0 +1,1021 @@
+"""DepAtlas CLI.
+
+Commands: `scan` (parse a local directory, GitHub repo or AWS CodeCommit
+repo into a persisted SQLite graph, with CODEOWNERS / manifest team
+resolution and alerting), `query` (read it back by service or team),
+`snapshots` and `diff` (history), `alerts` (check the whole stored graph),
+and `export` (JSON or DOT). SPEC.pdf section 9 has the full planned command
+surface; `watch` and `init` are not built yet.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import click
+
+from depatlas.parsers.python_parser import (
+    parse_repo as parse_python_repo,
+    extract_signatures as extract_python_signatures,
+)
+from depatlas.parsers.java_parser import (
+    parse_repo as parse_java_repo,
+    extract_signatures as extract_java_signatures,
+)
+from depatlas.parsers.js_ts_parser import (
+    parse_repo as parse_js_ts_repo,
+    extract_signatures as extract_js_ts_signatures,
+)
+from depatlas.output.json_export import export_edges, export_graph_json
+from depatlas.output.dot_export import export_dot
+from depatlas.graph.builder import build_graph
+from depatlas.graph.store import GraphStore
+from depatlas.ownership.codeowners import parse_codeowners
+from depatlas.ownership.manifest import parse_ownership_manifest
+from depatlas.gitinfo import get_sha
+from depatlas.intelligence.diff import compute_diff
+from depatlas.check import CheckError, run_check
+from depatlas.discovery import (
+    discover_workspace,
+    find_codeowners,
+    load_registry,
+    registry_to_dict,
+    resolve_manifest,
+)
+from depatlas.orgscan import scan_all
+from depatlas.workflow import resolve_languages, run_scan
+from depatlas.fsutil import detect_languages, excluding, is_test_path, load_excludes
+from depatlas.intelligence.alerts import (
+    check_breaking_changes,
+    comparable_signatures,
+    check_high_fan_in,
+    check_new_cross_team_dependencies,
+    check_orphaned_service,
+    check_unowned_service,
+    DEFAULT_HIGH_FAN_IN_THRESHOLD,
+)
+from depatlas.connectors.github import GitHubConnectorError, fetch_repo as fetch_github_repo, get_token
+from depatlas.connectors.codecommit import (
+    CodeCommitConnectorError,
+    fetch_repo as fetch_codecommit_repo,
+    get_client as get_codecommit_client,
+)
+
+DEFAULT_DB_PATH = Path(".depatlas/graph.db")
+DEFAULT_CACHE_DIR = Path(".depatlas/cache")
+
+PARSERS = {
+    "python": parse_python_repo,
+    "java": parse_java_repo,
+    "javascript": parse_js_ts_repo,
+}
+
+SIGNATURE_EXTRACTORS = {
+    "python": extract_python_signatures,
+    "java": extract_java_signatures,
+    "javascript": extract_js_ts_signatures,
+}
+
+
+def _repo_key(value: str) -> str:
+    """Turn a `--repo` filter into the key snapshots are stored under:
+    "github:owner/repo" and "codecommit:name" are used as given; anything
+    else is a local path, resolved to an absolute one.
+    """
+    if value.startswith(("github:", "codecommit:")):
+        return value
+    return str(Path(value).resolve())
+
+
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+ALERT_EXIT_CODE = 3  # distinct from 1 (click errors / crashes) and 2 (usage)
+
+
+def _exit_if_failing(alert_list: list, fail_on: str | None) -> None:
+    """Exit with status 3 if any alert is at or above `fail_on`, so a CI job
+    can tell "blocked by an alert" (3) from "the tool failed" (1)."""
+    if fail_on is None:
+        return
+    threshold = _SEVERITY_RANK[fail_on]
+    if any(_SEVERITY_RANK.get(a.severity, 0) >= threshold for a in alert_list):
+        raise click.exceptions.Exit(ALERT_EXIT_CODE)
+
+
+_REGISTRY_OPTION = click.option(
+    "--registry",
+    "registry_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "The other services in your system: the output of `depatlas discover`, "
+        "or a graph export from `depatlas scan-all` (which carries one)."
+    ),
+)
+_NAME_OPTION = click.option(
+    "--name",
+    "service_name_override",
+    default=None,
+    help="Name of the service being scanned (default: inferred from the code).",
+)
+
+
+def _log(message: str) -> None:
+    click.echo(message, err=True)
+
+
+def _ownership_for(repo_path: Path, codeowners_path: Path | None):
+    """The CODEOWNERS file to use: the one given, else one in a standard place."""
+    if codeowners_path is not None:
+        return codeowners_path
+    found = find_codeowners(repo_path)
+    if found is not None:
+        _log(f"Using {found.relative_to(repo_path).as_posix()} for ownership")
+    return found
+
+
+_FAIL_ON_OPTION = click.option(
+    "--fail-on",
+    "fail_on",
+    type=click.Choice(["low", "medium", "high"]),
+    default=None,
+    help="Exit with status 3 if any alert at or above this severity is raised (for CI).",
+)
+
+
+@click.group()
+@click.version_option(package_name="depatlas")
+def cli() -> None:
+    """DepAtlas -- map service-to-service dependencies from source code."""
+
+
+@cli.command()
+@click.option(
+    "--repo",
+    "repo_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Path to a local repo directory to scan. Use this OR --github-repo OR --codecommit-repo.",
+)
+@click.option(
+    "--github-repo",
+    "github_repo",
+    default=None,
+    help=(
+        "A GitHub repo to scan, as 'owner/repo' (e.g. 'sshafeeq84/DepAtlas'). "
+        "Downloaded via the GitHub API using the token in the "
+        "DEPATLAS_GITHUB_TOKEN environment variable."
+    ),
+)
+@click.option(
+    "--codecommit-repo",
+    "codecommit_repo",
+    default=None,
+    help=(
+        "An AWS CodeCommit repo name to scan. Fetched via boto3 using the "
+        "AWS profile named in the DEPATLAS_AWS_PROFILE environment "
+        "variable (falls back to the default AWS credential chain if unset)."
+    ),
+)
+@click.option(
+    "--region",
+    "region",
+    default="us-east-1",
+    show_default=True,
+    help="AWS region (only used with --codecommit-repo).",
+)
+@click.option(
+    "--ref",
+    "ref",
+    default="HEAD",
+    show_default=True,
+    help="Branch, tag, or commit SHA to scan (used with --github-repo or --codecommit-repo).",
+)
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_CACHE_DIR,
+    show_default=True,
+    help="Where downloaded remote repos are extracted (used with --github-repo or --codecommit-repo).",
+)
+@click.option(
+    "--services",
+    "services_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Optional. A JSON file mapping importable module names to service "
+        "names, e.g. {\"__self__\": \"payments-service\", \"auth_client\": \"auth-service\"}. "
+        "__self__ names the service being scanned. An optional reserved "
+        "\"endpoints\" key maps URL host/path patterns to service names, e.g. "
+        "{\"endpoints\": {\"auth.internal\": \"auth-service\"}}. Without it "
+        "the service is named from the code (see `depatlas discover`) and "
+        "--registry supplies the other services."
+    ),
+)
+@_REGISTRY_OPTION
+@_NAME_OPTION
+@click.option(
+    "--language",
+    "language",
+    type=click.Choice(sorted(PARSERS.keys()) + ["all"]),
+    multiple=True,
+    default=(),
+    help=(
+        "Language parser(s) to run on this repo. Repeat the option "
+        "(--language java --language javascript) or use 'all' for a repo "
+        "that mixes languages; results are saved as one service. Default: "
+        "detect from file extensions."
+    ),
+)
+@click.option(
+    "--codeowners",
+    "codeowners_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to a CODEOWNERS file. If supplied, the scanned service's "
+        "team is resolved as the majority owner across its files "
+        "(SPEC.pdf section 8, priority 1)."
+    ),
+)
+@click.option(
+    "--ownership-manifest",
+    "ownership_manifest_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to a depatlas.yaml ownership manifest, mapping service "
+        "names directly to teams. Used only when --codeowners is not "
+        "supplied, or resolves no team for this repo "
+        "(SPEC.pdf section 8, priority 2)."
+    ),
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Also write JSON output to this file (in addition to persisting).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+@click.option(
+    "--alerts/--no-alerts",
+    "alerts_enabled",
+    default=True,
+    help=(
+        "Check for NEW_CROSS_TEAM_DEPENDENCY, BREAKING_CHANGE, "
+        "ORPHANED_SERVICE, UNOWNED_SERVICE, and HIGH_FAN_IN after this scan and print any "
+        "that trigger (SPEC.pdf section 10). On by default."
+    ),
+)
+@click.option(
+    "--fan-in-threshold",
+    "fan_in_threshold",
+    type=int,
+    default=DEFAULT_HIGH_FAN_IN_THRESHOLD,
+    show_default=True,
+    help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
+)
+@click.option(
+    "--exclude",
+    "exclude",
+    multiple=True,
+    help="Path pattern to leave out of the scan (repeatable), e.g. --exclude generated/. "
+    "A .depatlasignore file in the service folder is read too.",
+)
+@_FAIL_ON_OPTION
+def scan(
+    repo_path: Path | None,
+    github_repo: str | None,
+    codecommit_repo: str | None,
+    region: str,
+    ref: str,
+    cache_dir: Path,
+    services_path: Path | None,
+    registry_path: Path | None,
+    service_name_override: str | None,
+    language: tuple[str, ...],
+    codeowners_path: Path | None,
+    ownership_manifest_path: Path | None,
+    output_path: Path | None,
+    db_path: Path,
+    alerts_enabled: bool,
+    fan_in_threshold: int,
+    fail_on: str | None,
+    exclude: tuple[str, ...],
+) -> None:
+    """Scan a repo (local, GitHub, or CodeCommit), persist the results, and print the edges found."""
+    sources_given = [s for s in (repo_path, github_repo, codecommit_repo) if s]
+    if len(sources_given) == 0:
+        raise click.UsageError("Provide one of --repo, --github-repo, or --codecommit-repo.")
+    if len(sources_given) > 1:
+        raise click.UsageError("Provide only one of --repo, --github-repo, or --codecommit-repo.")
+
+    if fail_on is not None and not alerts_enabled:
+        raise click.UsageError("--fail-on has no effect with --no-alerts; drop one of them.")
+
+    repo_key: str | None = None  # stable identity for this repo across scans
+
+    if github_repo:
+        if "/" not in github_repo:
+            raise click.UsageError("--github-repo must be in 'owner/repo' form.")
+        owner, repo_name = github_repo.split("/", 1)
+        try:
+            token = get_token()
+            click.echo(f"Downloading {github_repo}@{ref} from GitHub...", err=True)
+            repo_path = fetch_github_repo(owner, repo_name, token, cache_dir, ref)
+            repo_key = f"github:{github_repo}"
+        except GitHubConnectorError as exc:
+            raise click.ClickException(str(exc))
+
+    if codecommit_repo:
+        try:
+            client = get_codecommit_client(region)
+            click.echo(f"Downloading {codecommit_repo} from AWS CodeCommit ({region})...", err=True)
+            commit_specifier = ref if ref != "HEAD" else ""
+            repo_path = fetch_codecommit_repo(codecommit_repo, client, cache_dir, commit_specifier)
+            repo_key = f"codecommit:{codecommit_repo}"
+        except CodeCommitConnectorError as exc:
+            raise click.ClickException(str(exc))
+
+    # Normalize to an absolute path now, once -- everything downstream
+    # (the edges table, the services table, and snapshots) keys off this
+    # exact string, so a relative "--repo repo" and an equivalent
+    # absolute "--repo /full/path/to/repo" must resolve to the same
+    # value, or repeat scans and `diff --last` silently stop matching up.
+    repo_path = repo_path.resolve()
+    if repo_key is None:
+        repo_key = str(repo_path)
+
+    try:
+        known_services, known_endpoints = resolve_manifest(
+            repo_path, services_path, registry_path, service_name_override, _log
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    self_service = known_services.get("__self__", "unknown-service")
+
+    codeowners_path = _ownership_for(repo_path, codeowners_path)
+    manifest_teams = (
+        parse_ownership_manifest(ownership_manifest_path) if ownership_manifest_path else None
+    )
+    with excluding(repo_path, load_excludes(repo_path, exclude)):
+        languages = resolve_languages(repo_path, language, PARSERS, _log)
+
+    result = run_scan(
+        repo_path,
+        repo_key,
+        known_services,
+        known_endpoints,
+        languages,
+        PARSERS,
+        SIGNATURE_EXTRACTORS,
+        db_path,
+        codeowners_path=codeowners_path,
+        manifest_teams=manifest_teams,
+        ownership_inputs_supplied=bool(codeowners_path or ownership_manifest_path),
+        alerts_enabled=alerts_enabled,
+        fan_in_threshold=fan_in_threshold,
+        log=_log,
+        exclude=exclude,
+    )
+    edges, nodes = result.edges, result.nodes
+    snapshot_id, triggered_alerts = result.snapshot_id, result.alerts
+
+    text = export_edges(edges, output_path)
+    click.echo(text)
+
+    self_node = next(n for n in nodes if n.id == self_service)
+    team_note = f", team={self_node.team}" if self_node.team else ", team=unowned"
+    click.echo(
+        f"\nPersisted {len(edges)} edge(s) and {len(nodes)} service node(s) to {db_path}"
+        f"{team_note} (snapshot #{snapshot_id})",
+        err=True,
+    )
+    if output_path is not None:
+        click.echo(f"Also wrote JSON to {output_path}", err=True)
+
+    for alert in triggered_alerts:
+        click.echo(f"[{alert.severity.upper()}] {alert.type}: {alert.message}", err=True)
+
+    _exit_if_failing(triggered_alerts, fail_on)
+
+
+@cli.command()
+@click.option("--service", "service_name", default=None, help="Service name to query.")
+@click.option("--team", "team_name", default=None, help="List services owned by this team.")
+@click.option(
+    "--direction",
+    type=click.Choice(["downstream", "upstream"]),
+    default="downstream",
+    show_default=True,
+    help=(
+        "Only used with --service. downstream = what this service "
+        "depends on. upstream = what depends on this service "
+        "(i.e. 'impact of')."
+    ),
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def query(service_name: str | None, team_name: str | None, direction: str, db_path: Path) -> None:
+    """Query the persisted graph, either by --service or by --team."""
+    if not service_name and not team_name:
+        raise click.UsageError("Provide either --service or --team.")
+    if service_name and team_name:
+        raise click.UsageError("Provide only one of --service or --team, not both.")
+
+    store = GraphStore(db_path)
+
+    if team_name:
+        services = [s for s in store.all_services() if s["team"] == team_name]
+        store.close()
+        if not services:
+            click.echo(f"No services found owned by '{team_name}'.")
+            return
+        click.echo(f"Services owned by '{team_name}':")
+        for svc in services:
+            click.echo(f"  {svc['id']}  (repo: {svc['repo'] or 'unknown'})")
+        return
+
+    edges = store.edges_for_service(service_name, direction)
+    store.close()
+
+    if not edges:
+        click.echo(f"No {direction} dependencies found for '{service_name}'.")
+        return
+
+    if direction == "downstream":
+        for edge in edges:
+            click.echo(
+                f"{service_name} -> {edge['target_service']}  "
+                f"[{edge['type']}, {edge['confidence']}]  "
+                f"({edge['source_file']}:{edge['source_line']})"
+            )
+    else:
+        click.echo(f"Services that depend on '{service_name}':")
+        for edge in edges:
+            click.echo(
+                f"{edge['source_service']} -> {service_name}  "
+                f"[{edge['type']}, {edge['confidence']}]  "
+                f"({edge['source_file']}:{edge['source_line']})"
+            )
+
+
+@cli.command()
+@click.option(
+    "--repo",
+    "repo_filter",
+    default=None,
+    help="Limit to snapshots of this repo path (as recorded at scan time).",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of snapshots to list.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def snapshots(repo_filter: str | None, limit: int, db_path: Path) -> None:
+    """List saved snapshots (most recent first) -- use their ids with `diff --from/--to`."""
+    if repo_filter is not None:
+        repo_filter = _repo_key(repo_filter)
+
+    store = GraphStore(db_path)
+    rows = store.list_snapshots(repo=repo_filter, limit=limit)
+    store.close()
+
+    if not rows:
+        click.echo("No snapshots found.")
+        return
+
+    for row in rows:
+        click.echo(f"#{row['id']}  {row['created_at']}  {row['repo']}")
+
+
+@cli.command()
+@click.option("--from", "from_snapshot_id", type=int, default=None)
+@click.option("--to", "to_snapshot_id", type=int, default=None)
+@click.option(
+    "--last",
+    "last_n",
+    type=int,
+    default=None,
+    help="Compare the two most recent snapshots for --repo (i.e. --last 2).",
+)
+@click.option(
+    "--repo",
+    "repo_filter",
+    default=None,
+    help="Repo path to use with --last (required when using --last).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def diff(
+    from_snapshot_id: int | None,
+    to_snapshot_id: int | None,
+    last_n: int | None,
+    repo_filter: str | None,
+    db_path: Path,
+) -> None:
+    """Compare two snapshots and report added/removed dependencies.
+
+    Either give explicit ids with --from/--to (see `depatlas snapshots`
+    for available ids), or use --last 2 --repo <path> to compare a repo's
+    two most recent scans.
+    """
+    store = GraphStore(db_path)
+
+    if last_n is not None:
+        if last_n != 2:
+            store.close()
+            raise click.UsageError("Only '--last 2' is currently supported.")
+        if not repo_filter:
+            store.close()
+            raise click.UsageError("--last requires --repo.")
+        repo_filter = _repo_key(repo_filter)
+        recent = store.list_snapshots(repo=repo_filter, limit=2)
+        if len(recent) < 2:
+            store.close()
+            click.echo(f"Not enough snapshots for '{repo_filter}' to compare (need 2).")
+            return
+        to_snapshot_id, from_snapshot_id = recent[0]["id"], recent[1]["id"]
+    elif from_snapshot_id is None or to_snapshot_id is None:
+        store.close()
+        raise click.UsageError("Provide either --from/--to, or --last 2 --repo <path>.")
+
+    old_snapshot = store.get_snapshot(from_snapshot_id)
+    new_snapshot = store.get_snapshot(to_snapshot_id)
+    store.close()
+
+    if old_snapshot is None:
+        raise click.ClickException(f"No snapshot #{from_snapshot_id} found.")
+    if new_snapshot is None:
+        raise click.ClickException(f"No snapshot #{to_snapshot_id} found.")
+
+    result = compute_diff(old_snapshot["edges"], new_snapshot["edges"])
+
+    click.echo(
+        f"Diff: #{from_snapshot_id} ({old_snapshot['created_at']}) "
+        f"-> #{to_snapshot_id} ({new_snapshot['created_at']})"
+    )
+
+    if not result["added"] and not result["removed"]:
+        click.echo("No changes.")
+        return
+
+    for edge in result["added"]:
+        click.echo(
+            f"  + {edge['source_service']} -> {edge['target_service']}  "
+            f"[{edge['type']}, {edge['confidence']}]  "
+            f"({edge['source_file']}:{edge['source_line']})"
+        )
+    for edge in result["removed"]:
+        click.echo(
+            f"  - {edge['source_service']} -> {edge['target_service']}  "
+            f"[{edge['type']}, {edge['confidence']}]  "
+            f"({edge['source_file']}:{edge['source_line']})"
+        )
+
+
+@cli.command()
+@click.option(
+    "--severity",
+    "severity_filter",
+    type=click.Choice(["high", "medium", "low"]),
+    default=None,
+    help="Only show alerts at this severity.",
+)
+@click.option(
+    "--fan-in-threshold",
+    "fan_in_threshold",
+    type=int,
+    default=DEFAULT_HIGH_FAN_IN_THRESHOLD,
+    show_default=True,
+    help="Distinct-dependent count that triggers a HIGH_FAN_IN alert.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+@_FAIL_ON_OPTION
+def alerts(
+    severity_filter: str | None, fan_in_threshold: int, db_path: Path, fail_on: str | None
+) -> None:
+    """Check the whole stored graph for all five SPEC.pdf section 10
+    alert types: NEW_CROSS_TEAM_DEPENDENCY, HIGH_FAN_IN, ORPHANED_SERVICE,
+    UNOWNED_SERVICE, and BREAKING_CHANGE.
+    """
+    store = GraphStore(db_path)
+    all_services = store.all_services()
+    service_teams = {s["id"]: s["team"] for s in all_services}
+    # A repo maps to exactly one "real" (non-placeholder) service node --
+    # the one that was actually scanned there -- needed to know which
+    # service's signatures to diff for BREAKING_CHANGE.
+    repo_to_service = {s["repo"]: s["id"] for s in all_services if s["repo"]}
+
+    triggered: list = []
+
+    # NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE: for every distinct
+    # repo with at least two snapshots, diff the two most recent.
+    seen_repos = {s["repo"] for s in all_services if s["repo"]}
+    for repo in seen_repos:
+        recent = store.list_snapshots(repo=repo, limit=2)
+        if len(recent) == 2:
+            old_snapshot = store.get_snapshot(recent[1]["id"])
+            new_snapshot = store.get_snapshot(recent[0]["id"])
+            diff_result = compute_diff(old_snapshot["edges"], new_snapshot["edges"], by_location=False)
+            triggered += check_new_cross_team_dependencies(diff_result["added"], service_teams)
+
+            self_service = repo_to_service.get(repo)
+            if self_service:
+                upstream = store.edges_for_service(self_service, direction="upstream")
+                old_sigs, new_sigs, skipped = comparable_signatures(old_snapshot, new_snapshot)
+                if skipped:
+                    click.echo(
+                        f"warning: {repo}: language set changed between the last two "
+                        f"scans; not comparing signatures for: {', '.join(skipped)}",
+                        err=True,
+                    )
+                triggered += check_breaking_changes(self_service, old_sigs, new_sigs, upstream)
+
+    # The other three are point-in-time checks against every known service.
+    for svc in all_services:
+        downstream = store.edges_for_service(svc["id"], direction="downstream")
+        upstream = store.edges_for_service(svc["id"], direction="upstream")
+        triggered += check_orphaned_service(svc["id"], downstream, upstream)
+        triggered += check_unowned_service(svc["id"], svc["team"])
+        triggered += check_high_fan_in(svc["id"], upstream, threshold=fan_in_threshold)
+
+    store.close()
+
+    # --fail-on looks at everything found; --severity only filters the display.
+    all_triggered = triggered
+    if severity_filter:
+        triggered = [a for a in triggered if a.severity == severity_filter]
+
+    if not triggered:
+        click.echo("No alerts.")
+    for alert in triggered:
+        click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
+
+    _exit_if_failing(all_triggered, fail_on)
+
+
+@cli.command()
+@click.option(
+    "--repo",
+    "repo_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("."),
+    show_default=True,
+    help="The service's folder inside a git checkout (a monorepo subfolder is fine).",
+)
+@click.option(
+    "--base",
+    "base",
+    required=True,
+    help="The ref to compare against, e.g. origin/main. The merge-base with HEAD is used.",
+)
+@click.option(
+    "--services",
+    "services_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional: the same --services manifest `scan` takes. Without it the service is named from the code.",
+)
+@_REGISTRY_OPTION
+@_NAME_OPTION
+@click.option(
+    "--graph",
+    "graph_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "An org-wide graph (from `depatlas scan-all --export`, or `depatlas "
+        "export --format json`), e.g. produced by a nightly job. Supplies the "
+        "teams and the dependents, and -- when it carries a registry -- the "
+        "other services' names; without it no alert can fire."
+    ),
+)
+@click.option(
+    "--language",
+    "language",
+    type=click.Choice(sorted(PARSERS.keys()) + ["all"]),
+    multiple=True,
+    default=(),
+    help="Language parser(s), as for `scan`. Default: detect from file extensions.",
+)
+@click.option(
+    "--codeowners",
+    "codeowners_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="CODEOWNERS file, to resolve this service's own team.",
+)
+@click.option(
+    "--ownership-manifest",
+    "ownership_manifest_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="depatlas.yaml ownership manifest, to resolve this service's own team.",
+)
+@click.option(
+    "--working-tree",
+    "use_working_tree",
+    is_flag=True,
+    help="Compare the files on disk (uncommitted edits included) instead of HEAD.",
+)
+@click.option(
+    "--exclude",
+    "exclude",
+    multiple=True,
+    help="Path pattern to leave out of the scan (repeatable), e.g. --exclude generated/. "
+    "A .depatlasignore file in the service folder is read too.",
+)
+@_FAIL_ON_OPTION
+def check(
+    repo_path: Path,
+    base: str,
+    services_path: Path | None,
+    registry_path: Path | None,
+    service_name_override: str | None,
+    graph_path: Path | None,
+    language: tuple[str, ...],
+    codeowners_path: Path | None,
+    ownership_manifest_path: Path | None,
+    use_working_tree: bool,
+    fail_on: str | None,
+    exclude: tuple[str, ...],
+) -> None:
+    """Check a change against its base branch, with no database.
+
+    Scans the merge-base of --base and HEAD, scans the working tree, and
+    reports NEW_CROSS_TEAM_DEPENDENCY and BREAKING_CHANGE for what changed.
+    Designed for a pull-request job on a fresh CI runner (which has no
+    stored history): pass the org graph with --graph. Exit status 3 when an
+    alert reaches --fail-on, 1 when the check itself could not run.
+    """
+    if fail_on is not None and graph_path is None:
+        raise click.UsageError(
+            "--fail-on needs --graph: without the org graph no alert can fire, so the "
+            "check would always pass. Pass the graph file from `scan-all --export`."
+        )
+    if registry_path is None and graph_path is not None:
+        try:  # a graph export from `scan-all` carries the registry too
+            load_registry(graph_path)
+            registry_path = graph_path
+        except ValueError:
+            pass
+    try:
+        known_services, known_endpoints = resolve_manifest(
+            repo_path.resolve(), services_path, registry_path, service_name_override, _log
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    languages = (
+        sorted(PARSERS) if "all" in language else list(dict.fromkeys(language))
+    )
+    codeowners_path = _ownership_for(repo_path.resolve(), codeowners_path)
+    try:
+        result = run_check(
+            repo_path.resolve(),
+            base,
+            known_services,
+            known_endpoints,
+            languages,
+            PARSERS,
+            SIGNATURE_EXTRACTORS,
+            graph_path=graph_path,
+            codeowners_rules=parse_codeowners(codeowners_path) if codeowners_path else None,
+            manifest_teams=(
+                parse_ownership_manifest(ownership_manifest_path)
+                if ownership_manifest_path
+                else None
+            ),
+            use_working_tree=use_working_tree,
+            exclude=exclude,
+        )
+    except CheckError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(
+        f"Compared {'the working tree' if use_working_tree else 'HEAD'} with the merge-base of '{base}' "
+        f"({result['base_sha'][:8]}); languages: {', '.join(result['languages'])}",
+        err=True,
+    )
+    for note in result["notes"]:
+        click.echo(f"note: {note}", err=True)
+
+    if not result["alerts"]:
+        click.echo("No alerts.")
+    for alert in result["alerts"]:
+        click.echo(f"[{alert.severity.upper()}] {alert.type} ({alert.service}): {alert.message}")
+
+    _exit_if_failing(result["alerts"], fail_on)
+
+
+@cli.command()
+@click.option(
+    "--root",
+    "root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("."),
+    show_default=True,
+    help="Folder to search for services (a monorepo, or a folder of checkouts).",
+)
+@click.option("--depth", type=int, default=3, show_default=True, help="How many folders deep to look.")
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the registry here (for `scan --registry`).",
+)
+def discover(root: Path, depth: int, output_path: Path | None) -> None:
+    """Find the services under a folder and show how they are named.
+
+    No manifest needed: names come from spring.application.name, pom.xml,
+    pyproject.toml or package.json, and the import names (Python packages,
+    npm name, Java package prefix) are what other code uses to depend on
+    each service. Use the output with `scan --registry`.
+    """
+    services = discover_workspace(root, max_depth=depth)
+    if not services:
+        click.echo("No services found.")
+        return
+    for service in services:
+        click.echo(
+            f"{service.name}  [{', '.join(service.languages) or '-'}]  {service.path}\n"
+            f"    from {service.source}; import names: {', '.join(service.import_names) or '(none)'}"
+        )
+    if output_path is not None:
+        output_path.write_text(json.dumps(registry_to_dict(services), indent=2), encoding="utf-8")
+        click.echo(f"\nWrote registry for {len(services)} service(s) to {output_path}", err=True)
+
+
+@cli.command("scan-all")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="YAML file listing the repos to scan (see the README).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+@click.option(
+    "--export",
+    "export_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the whole graph, with the service registry, to this JSON file (for `check --graph`).",
+)
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Where remote repos are downloaded (default: from the config, else .depatlas/cache).",
+)
+@click.option("--reset", is_flag=True, help="Start from an empty database.")
+@click.option(
+    "--allow-partial",
+    is_flag=True,
+    help="Write the export even if some repos failed (default: write nothing and exit 1).",
+)
+def scan_all_command(
+    config_path: Path,
+    db_path: Path,
+    export_path: Path | None,
+    cache_dir: Path | None,
+    reset: bool,
+    allow_partial: bool,
+) -> None:
+    """Scan every repo in a config file into one graph.
+
+    Meant for a scheduled job: it builds the org-wide graph that
+    `depatlas check --graph` reads in pull requests. Names and links
+    between repos are inferred from the code. Exits 1 if any repo failed
+    (and then writes no export unless --allow-partial), so a half-built
+    graph is never published by mistake.
+    """
+    if reset:
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+    try:
+        report = scan_all(config_path, db_path, PARSERS, SIGNATURE_EXTRACTORS, cache_dir, _log)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"\nScanned {len(report.scanned)} repo(s):")
+    for item in report.scanned:
+        click.echo(f"  {item['name']}: {item['edges']} edge(s)")
+    if report.failures:
+        click.echo(f"\n{len(report.failures)} repo(s) failed:", err=True)
+        for label, reason in report.failures:
+            click.echo(f"  {label}: {reason}", err=True)
+
+    if export_path is not None and (allow_partial or not report.failures):
+        store = GraphStore(db_path)
+        payload = {
+            "nodes": store.all_services(),
+            "edges": store.all_edges(),
+            "registry": report.registry,
+        }
+        store.close()
+        export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        click.echo(f"Wrote graph ({len(payload['nodes'])} node(s), {len(payload['edges'])} edge(s)) to {export_path}")
+    elif export_path is not None:
+        click.echo("Not writing the export because some repos failed (use --allow-partial).", err=True)
+
+    if report.failures:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command()
+@click.option(
+    "--format",
+    "export_format",
+    type=click.Choice(["json", "dot"]),
+    required=True,
+    help="Output format.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="File to write the export to.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=DEFAULT_DB_PATH,
+    show_default=True,
+    help="Path to the SQLite graph store.",
+)
+def export(export_format: str, output_path: Path, db_path: Path) -> None:
+    """Export the whole persisted graph as JSON or DOT (SPEC.pdf section 9).
+
+    Unlike `scan --output`, which writes just that one scan's edges,
+    this exports every service and edge currently in the store, across
+    every repo that's been scanned.
+    """
+    store = GraphStore(db_path)
+    nodes = store.all_services()
+    edges = store.all_edges()
+    store.close()
+
+    if export_format == "json":
+        export_graph_json(nodes, edges, output_path)
+    else:
+        output_path.write_text(export_dot(nodes, edges), encoding="utf-8")
+
+    click.echo(f"Wrote {export_format} export ({len(nodes)} node(s), {len(edges)} edge(s)) to {output_path}")
+
+
+if __name__ == "__main__":
+    cli()

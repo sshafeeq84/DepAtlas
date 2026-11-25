@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from depatlas.fsutil import detect_languages, is_test_path
+from depatlas.fsutil import detect_languages, excluding, is_test_path, load_excludes
 from depatlas.graph.builder import build_graph
 from depatlas.intelligence.alerts import (
     Alert,
@@ -130,7 +130,7 @@ def analyse(
         edges.extend(parsers[lang](repo_path, known_services, known_endpoints))
         signatures.extend(extractors[lang](repo_path, self_service))
     for edge in edges:
-        edge.from_test = is_test_path(Path(edge.source_file))
+        edge.from_test = edge.from_test or is_test_path(Path(edge.source_file))
     return edges, signatures
 
 
@@ -146,10 +146,13 @@ def run_check(
     codeowners_rules=None,
     manifest_teams: dict | None = None,
     use_working_tree: bool = False,
+    exclude: tuple[str, ...] | list[str] = (),
 ) -> dict:
     """Run the check. Returns {"alerts", "base_sha", "notes", "languages"}."""
     self_service = known_services.get("__self__", "unknown-service")
     notes: list[str] = []
+    # Read from the service's own folder; applied to both sides of the comparison.
+    patterns = load_excludes(repo_path, exclude)
 
     base_sha = resolve_merge_base(repo_path, base)
 
@@ -190,21 +193,22 @@ def run_check(
                     "commit them, or pass --working-tree."
                 )
 
-        if languages:
-            used = list(languages)
-        else:
-            used = sorted(set(detect_languages(head_dir)) | set(detect_languages(base_dir))) or [
-                "python"
-            ]
+        with excluding(head_dir, patterns), excluding(base_dir, patterns):
+            if languages:
+                used = list(languages)
+            else:
+                used = sorted(set(detect_languages(head_dir)) | set(detect_languages(base_dir))) or [
+                    "python"
+                ]
 
-        new_edges, new_sigs = analyse(
-            head_dir, used, known_services, known_endpoints, self_service, parsers, extractors
-        )
-        old_edges, old_sigs = (
-            analyse(base_dir, used, known_services, known_endpoints, self_service, parsers, extractors)
-            if base_existed
-            else ([], [])
-        )
+            new_edges, new_sigs = analyse(
+                head_dir, used, known_services, known_endpoints, self_service, parsers, extractors
+            )
+            old_edges, old_sigs = (
+                analyse(base_dir, used, known_services, known_endpoints, self_service, parsers, extractors)
+                if base_existed
+                else ([], [])
+            )
 
     # Teams: the org graph, overlaid with this repo's own ownership inputs.
     service_teams = {n["id"]: n.get("team") for n in graph_nodes}

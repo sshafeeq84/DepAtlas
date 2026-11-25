@@ -34,7 +34,7 @@ from pathlib import Path
 
 import yaml
 
-from depatlas.fsutil import SKIP_DIRS, detect_languages, iter_files
+from depatlas.fsutil import SKIP_DIRS, detect_languages, excluding, iter_files, load_excludes
 
 try:  # Python 3.11+
     import tomllib
@@ -49,6 +49,9 @@ GENERIC_IMPORT_NAMES = frozenset(
         "scripts", "tools", "docs", "migrations", "settings", "setup", "conftest", "manage",
         "types", "index", "shared", "helpers", "handlers", "routes", "db", "database",
         "lambda_function", "handler", "function",
+        # test, docs and example folders that are importable packages in some projects
+        "t", "fixtures", "testdata", "doc", "docs_src", "examples", "example", "samples", "sample",
+        "demo", "demos", "benchmarks", "benchmark", "bench",
     }
 )
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
@@ -286,7 +289,7 @@ def infer_service_name(path: Path) -> tuple[str, str]:
 
 def _python_import_names(path: Path, name: str) -> list[str]:
     found: list[str] = []
-    for base in (path, path / "src"):
+    for base in (path, path / "src", path / "lib"):  # lib/: e.g. SQLAlchemy
         if not base.is_dir():
             continue
         for entry in sorted(base.iterdir()):
@@ -334,9 +337,20 @@ def _usable_import_name(name: str, language: str) -> bool:
     return True
 
 
-def describe_service(path: Path, root: Path | None = None, name: str | None = None) -> DiscoveredService:
-    """Everything discoverable about the service whose code is at `path`."""
+def describe_service(
+    path: Path,
+    root: Path | None = None,
+    name: str | None = None,
+    exclude: tuple[str, ...] | list[str] = (),
+) -> DiscoveredService:
+    """Everything discoverable about the service whose code is at `path`.
+    Paths in its .depatlasignore (and `exclude`) are not looked at."""
     path = Path(path).resolve()
+    with excluding(path, load_excludes(path, exclude)):
+        return _describe_service(path, root, name)
+
+
+def _describe_service(path: Path, root: Path | None, name: str | None) -> DiscoveredService:
     inferred, source = infer_service_name(path)
     service_name = name or inferred
     if name:

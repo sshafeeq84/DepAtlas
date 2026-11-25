@@ -283,3 +283,42 @@ def test_oversized_source_files_are_skipped_with_a_warning(tmp_path, capsys):
     big.write_text("a" * (MAX_SOURCE_BYTES + 1))
     assert [p.name for p in iter_files(tmp_path, "*.js")] == ["small.js"]
     assert "bundle.min.js" in capsys.readouterr().err
+
+
+# ---- round 6: linked git worktrees behave like ordinary checkouts ----
+
+
+def _worktree_repo(tmp_path):
+    main = tmp_path / "main-checkout"
+    _init(main)
+    svc = main / "pay"
+    _write(svc / "charge.py", "def charge(amount, currency):\n    return amount\n")
+    _commit(main, "base")
+    return main
+
+
+def _run_in_worktree(tmp_path, detached: bool, subfolder: bool):
+    main = _worktree_repo(tmp_path)
+    wt = tmp_path / "wt"
+    args = ["worktree", "add", "-q", str(wt)]
+    args += ["--detach"] if detached else ["-b", "feature"]
+    _git(main, *args)
+    target = wt / "pay"
+    (target / "charge.py").write_text("def charge(amount):\n    return amount\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "drop currency")
+    return _check(
+        tmp_path, target if subfolder else wt, "--graph", str(_graph(tmp_path)), "--fail-on", "high"
+    )
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_check_works_in_a_linked_worktree_subfolder(tmp_path, detached):
+    r = _run_in_worktree(tmp_path, detached=detached, subfolder=True)
+    assert r.exit_code == 3, r.output
+    assert "BREAKING_CHANGE" in r.output and "currency" in r.output
+
+
+def test_check_works_at_the_root_of_a_linked_worktree(tmp_path):
+    r = _run_in_worktree(tmp_path, detached=False, subfolder=False)
+    assert r.exit_code == 3, r.output

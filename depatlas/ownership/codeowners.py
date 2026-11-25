@@ -21,6 +21,8 @@ import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
 
+from depatlas.fsutil import path_globs
+
 
 @dataclass
 class OwnershipRule:
@@ -48,21 +50,8 @@ def parse_codeowners(path: Path) -> list[OwnershipRule]:
 
 
 def _globs(pattern: str) -> list[str]:
-    """The fnmatch globs that together express one CODEOWNERS pattern.
-
-    gitignore-style rules: a pattern with a "/" at the start or in the
-    middle is anchored to the repo root, any other matches at any depth; a
-    trailing "/" means everything inside that folder; a bare name matches a
-    file of that name or a folder of that name (and what is inside it).
-    Negation and "**" are out of scope. fnmatch's "*" also crosses "/",
-    which is more generous than gitignore for patterns like `docs/*`.
-    """
-    anchored = pattern.startswith("/") or "/" in pattern.rstrip("/")
-    body = pattern.lstrip("/")
-    if body.endswith("/"):
-        body += "*"
-    globs = [body] if "*" in body else [body, body + "/*"]
-    return globs if anchored else globs + ["*/" + g for g in globs]
+    """CODEOWNERS patterns use the shared gitignore-style rules (fsutil.path_globs)."""
+    return path_globs(pattern)
 
 
 def resolve_owner(file_path: str, repo_root: Path, rules: list[OwnershipRule]) -> str | None:
